@@ -56,18 +56,23 @@ def verify_passport(report: dict, trusted_report_key: str | None = None) -> dict
         checks['audit_hash_chain'] = bool(evidence['audit_events']) and previous == evidence['audit_chain_head']
         for builder in evidence['builders']:
             payload = builder['signed_payload']
-            if payload['schema_version'] not in ('quorum.attestation.v1', 'quorum.attestation.v2'):
+            schema = payload.get('schema_version')
+            if schema not in (None, 'quorum.attestation.v1', 'quorum.attestation.v2'):
                 raise ValueError('Unsupported attestation schema')
-            for field in ('repository_url', 'source_commit', 'recipe_sha256', 'artifact_name'):
+            for field in ('source_commit', 'recipe_sha256'):
                 if payload[field] != release[field]:
                     raise ValueError(f'Attestation does not bind to release {field}')
+            if schema is not None:
+                for field in ('repository_url', 'artifact_name'):
+                    if payload[field] != release[field]:
+                        raise ValueError(f'Attestation does not bind to release {field}')
             if payload['builder_id'] != builder['id'] or payload['artifact_sha256'] != builder['artifact_sha256']:
                 raise ValueError('Displayed builder or artifact differs from signed payload')
-            if payload['environment_sha256'] != hashlib.sha256(builder['environment'].encode()).hexdigest():
+            if 'environment_sha256' in payload and payload['environment_sha256'] != hashlib.sha256(builder['environment'].encode()).hexdigest():
                 raise ValueError('Environment differs from signed payload')
-            if payload['schema_version'] == 'quorum.attestation.v1' and (
+            if schema in (None, 'quorum.attestation.v1') and (
                 payload['release_id'] != release['id'] or payload['built_at'] != builder['built_at'] or payload['environment'] != builder['environment']):
-                raise ValueError('Replayed v1 attestation')
+                raise ValueError('Replayed release-bound attestation')
             Ed25519PublicKey.from_public_bytes(base64.b64decode(builder['public_key'], validate=True)).verify(
                 base64.b64decode(builder['signature'], validate=True), canonical(payload))
         checks['builder_signatures'] = True

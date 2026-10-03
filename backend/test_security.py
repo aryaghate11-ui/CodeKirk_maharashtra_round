@@ -138,6 +138,42 @@ class SecurityTests(unittest.TestCase):
         with self.assertRaises(main.HTTPException):
             main.generate_audit_report(report['release_id'])
 
+    def test_legacy_attestations_remain_readable_and_verifiable(self):
+        verification = main.run_demo_verification('valid')
+        release_id = verification['release_id']
+        builder_id = 'northstar-ci'
+        with main.connect() as db:
+            row = db.execute('SELECT * FROM attestations WHERE release_id = ? AND builder_id = ?',
+                             (release_id, builder_id)).fetchone()
+            release = db.execute('SELECT * FROM releases WHERE id = ?', (release_id,)).fetchone()
+            legacy = {
+                'artifact_sha256': row['artifact_sha256'], 'builder_id': builder_id,
+                'built_at': row['built_at'], 'environment': row['environment'],
+                'recipe_sha256': release['recipe_sha256'], 'release_id': release_id,
+                'source_commit': release['source_commit'],
+            }
+            signature = base64.b64encode(main.demo_private_key(builder_id).sign(
+                main.canonical_json(legacy).encode())).decode()
+            db.execute('UPDATE attestations SET payload_json = ?, signature = ? WHERE id = ?',
+                       (main.canonical_json(legacy), signature, row['id']))
+        record = main.get_release_record(release_id)
+        self.assertEqual(record['builders'][0]['attestation_schema'], 'quorum.attestation.legacy-v0')
+        report = main.generate_audit_report(release_id)
+        self.assertTrue(verify_passport(report)['valid'])
+
+    def test_corrupted_legacy_attestation_still_fails_closed(self):
+        verification = main.run_demo_verification('valid')
+        release_id = verification['release_id']
+        with main.connect() as db:
+            row = db.execute('SELECT * FROM attestations WHERE release_id = ? LIMIT 1', (release_id,)).fetchone()
+            payload = json.loads(row['payload_json'])
+            payload.pop('schema_version')
+            payload['artifact_sha256'] = '0' * 64
+            db.execute('UPDATE attestations SET payload_json = ? WHERE id = ?',
+                       (main.canonical_json(payload), row['id']))
+        with self.assertRaises(main.HTTPException):
+            main.get_release_record(release_id)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -504,12 +504,28 @@ def evaluate_release(release_id: str) -> dict:
 
         for row in rows:
             try:
-                stored = AttestationCreate(schema_version=json.loads(row['payload_json'])['schema_version'],
-                    builder_id=row['builder_id'], artifact_sha256=row['artifact_sha256'], environment=row['environment'],
-                    built_at=row['built_at'], signature=row['signature'])
-                payload = attestation_payload(release, stored)
-                if canonical_json(payload) != row['payload_json']:
+                payload = json.loads(row['payload_json'])
+                schema = payload.get('schema_version')
+                if schema not in (None, ATTESTATION_SCHEMA, REAL_ATTESTATION_SCHEMA):
+                    raise ValueError('Unsupported stored attestation schema')
+                required_bindings = {
+                    'builder_id': row['builder_id'],
+                    'artifact_sha256': row['artifact_sha256'],
+                    'source_commit': release['source_commit'],
+                    'recipe_sha256': release['recipe_sha256'],
+                }
+                if any(payload.get(field) != expected for field, expected in required_bindings.items()):
                     raise ValueError('Stored attestation binding changed')
+                for field, expected in (('release_id', release['id']), ('built_at', row['built_at']),
+                                        ('environment', row['environment'])):
+                    if schema != REAL_ATTESTATION_SCHEMA and payload.get(field) != expected:
+                        raise ValueError('Stored attestation binding changed')
+                if schema is not None:
+                    stored = AttestationCreate(schema_version=schema, builder_id=row['builder_id'],
+                        artifact_sha256=row['artifact_sha256'], environment=row['environment'],
+                        built_at=row['built_at'], signature=row['signature'])
+                    if canonical_json(attestation_payload(release, stored)) != row['payload_json']:
+                        raise ValueError('Stored attestation binding changed')
                 Ed25519PublicKey.from_public_bytes(base64.b64decode(row['public_key'], validate=True)).verify(
                     base64.b64decode(row['signature'], validate=True), canonical_json(payload).encode())
             except (ValueError, KeyError, InvalidSignature, binascii.Error):
@@ -569,7 +585,9 @@ def evaluate_release(release_id: str) -> dict:
                 "signature_valid": bool(row["signature_valid"]),
                 "built_at": row["built_at"],
                 "environment": row["environment"],
-                "attestation_schema": json.loads(row["payload_json"])["schema_version"],
+                "attestation_schema": json.loads(row["payload_json"]).get(
+                    "schema_version", "quorum.attestation.legacy-v0"
+                ),
                 "signing_key_fingerprint": hashlib.sha256(
                     base64.b64decode(row["public_key"])
                 ).hexdigest(),
