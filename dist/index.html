@@ -187,7 +187,7 @@
           <h1>Verify a software release</h1>
           <p class="subtitle">Compare the published artifact with independently reproduced builds.</p>
         </div>
-        <div class="network"><span class="pulse"></span>3 builders online</div>
+        <div class="network" id="apiStatus"><span class="pulse"></span><span>Checking local API…</span></div>
       </header>
 
       <div class="workspace">
@@ -199,7 +199,7 @@
                 <div class="field wide"><span class="label">Source repository</span><span class="value source-link">github.com/rakyll/hey</span></div>
                 <div class="field"><span class="label">Release</span><span class="value mono">v0.1.5</span></div>
                 <div class="field"><span class="label">Target</span><span class="value mono">linux / amd64</span></div>
-                <div class="field wide"><span class="label">Pinned source commit</span><span class="value mono">f7f0f8b6330c6c7f2c12…</span></div>
+                <div class="field wide"><span class="label">Pinned source commit</span><span class="value mono">e64ec7a3ad1ef8bc828fe61e1fb324cc2e74c604</span></div>
               </div>
 
               <div class="scenario-wrap">
@@ -292,6 +292,7 @@
     const ruleEls = Object.fromEntries([...document.querySelectorAll('[data-rule]')].map(el => [el.dataset.rule, el]));
     const timelineEls = [...document.querySelectorAll('.event')];
     const auditHash = document.querySelector('#auditHash');
+    const apiStatus = document.querySelector('#apiStatus');
 
     const goodHash = '73bc91e4…a20f';
     const badHash = 'badd09f1…77c2';
@@ -355,8 +356,60 @@
 
     const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 
+    async function checkApi() {
+      try {
+        const response = await fetch('/api/health', { headers: { Accept: 'application/json' } });
+        if (!response.ok || !response.headers.get('content-type')?.includes('application/json')) throw new Error('API unavailable');
+        await response.json();
+        apiStatus.querySelector('span:last-child').textContent = 'Local API connected';
+        apiStatus.dataset.connected = 'true';
+      } catch {
+        apiStatus.querySelector('span:last-child').textContent = 'Hosted demo mode';
+        apiStatus.dataset.connected = 'false';
+      }
+    }
+
+    function shortHash(hash) {
+      return hash ? `${hash.slice(0, 8)}…${hash.slice(-4)}` : '—';
+    }
+
+    async function requestBackendVerification(selectedScenario) {
+      if (apiStatus.dataset.connected !== 'true') return null;
+      const response = await fetch('/api/demo/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({ scenario: selectedScenario })
+      });
+      if (!response.ok) throw new Error('Verification API failed');
+      return response.json();
+    }
+
+    checkApi();
+
     runButton.addEventListener('click', async () => {
-      const data = scenarios[scenario.value];
+      let backendResult = null;
+      try {
+        backendResult = await requestBackendVerification(scenario.value);
+      } catch {
+        apiStatus.querySelector('span:last-child').textContent = 'API unavailable · demo fallback';
+        apiStatus.dataset.connected = 'false';
+      }
+      const fallback = scenarios[scenario.value];
+      const statusPresentation = {
+        verified: { title: 'Release verified', text: '3 independently signed build attestations satisfy the strict quorum policy.', tone: 'green' },
+        rejected: { title: 'Release rejected', text: 'The published artifact does not match the version reproduced from source. Do not install this file.', tone: 'red' },
+        disagreement: { title: 'Builder disagreement', text: 'Two builders agree, but one trusted builder reported a conflicting artifact. Manual investigation is required.', tone: 'amber' },
+        pending: { title: 'Insufficient evidence', text: 'The release has not yet received enough independent attestations.', tone: 'amber' }
+      };
+      const presentation = backendResult ? statusPresentation[backendResult.status] : fallback;
+      const data = backendResult ? {
+        builderHashes: backendResult.builders.map(builder => shortHash(builder.artifact_sha256)),
+        title: presentation.title,
+        text: presentation.text,
+        tone: presentation.tone,
+        rules: backendResult.rules,
+        chain: `chain: ${shortHash(backendResult.audit_chain_head)}`
+      } : fallback;
       resetResults();
       runButton.disabled = true;
       runButton.textContent = 'Verification in progress…';
@@ -373,12 +426,13 @@
         const el = builderEls[i];
         el.classList.remove('active');
         const mismatch = data.builderHashes[i] === badHash;
-        el.querySelector('.builder-result').innerHTML = `<span class="builder-hash" style="${mismatch ? 'color:var(--red)' : ''}">${data.builderHashes[i]}</span><span class="builder-state">Signature valid</span>`;
+        const signatureState = backendResult ? 'Ed25519 signature valid' : 'Demo signature valid';
+        el.querySelector('.builder-result').innerHTML = `<span class="builder-hash" style="${mismatch ? 'color:var(--red)' : ''}">${data.builderHashes[i]}</span><span class="builder-state">${signatureState}</span>`;
         buildCount.textContent = `${i + 1} / 3 complete`;
       }
 
       timelineEls[2].classList.add('done');
-      timelineEls[2].innerHTML = '<strong>Attestations collected</strong>3 signed build statements verified';
+      timelineEls[2].innerHTML = `<strong>Attestations collected</strong>${backendResult ? '3 Ed25519 signatures verified by the API' : '3 demonstration results collected'}`;
       await wait(420);
 
       Object.entries(data.rules).forEach(([name, pass]) => {
