@@ -26,14 +26,14 @@ export const TamperSimulator: React.FC<TamperSimulatorProps> = ({ scenario }) =>
         subtitle={scenario.name}
         icon={<Flame className="w-4 h-4 text-quorum-amber" />}
         badge={
-          <span className="font-mono text-[10px] px-2 py-0.5 rounded bg-brand-bg-deep border border-brand-border text-quorum-amber">
+          <span className="font-mono text-[10px] px-2 py-0.5 rounded bg-brand-bg-deep/70 backdrop-blur-sm border border-brand-border text-quorum-amber">
             SIMULATION
           </span>
         }
       />
       <CardBody className="space-y-6">
         {/* Threat Model Explanation */}
-        <div className="p-3.5 rounded-xl bg-brand-bg-deep/80 border border-brand-border text-xs space-y-1">
+        <div className="p-3.5 rounded-xl bg-brand-bg-deep/65 backdrop-blur-sm border border-brand-border text-xs space-y-1">
           <span className="text-[11px] font-mono text-brand-muted uppercase tracking-wider block">
             Threat Analysis & Defense Mechanism
           </span>
@@ -49,9 +49,9 @@ export const TamperSimulator: React.FC<TamperSimulatorProps> = ({ scenario }) =>
               Builder Divergence Mutation
             </span>
 
-            <div className="p-4 rounded-xl bg-brand-bg-deep border border-brand-border space-y-4">
+            <div className="p-4 rounded-xl bg-brand-bg-deep/65 backdrop-blur-sm border border-brand-border space-y-4">
               {/* Builder 03 Original State */}
-              <div className="flex items-center justify-between p-3 rounded-lg bg-brand-panel-elevated/40 border border-brand-border">
+              <div className="flex items-center justify-between p-3 rounded-lg bg-brand-panel-elevated/50 backdrop-blur-sm border border-brand-border">
                 <div className="space-y-0.5">
                   <div className="font-mono text-xs font-semibold text-white">
                     Builder 03 (Local Witness) — Source Compilation
@@ -71,7 +71,7 @@ export const TamperSimulator: React.FC<TamperSimulatorProps> = ({ scenario }) =>
               </div>
 
               {/* Builder 03 Divergent Output */}
-              <div className="flex items-center justify-between p-3 rounded-lg bg-quorum-amber-bg/40 border border-quorum-amber-border/70">
+              <div className="flex items-center justify-between p-3 rounded-lg bg-quorum-amber-bg/30 backdrop-blur-sm border border-quorum-amber-border/70">
                 <div className="space-y-0.5">
                   <div className="font-mono text-xs font-semibold text-white">
                     Builder 03 Produced Artifact Hash
@@ -94,8 +94,8 @@ export const TamperSimulator: React.FC<TamperSimulatorProps> = ({ scenario }) =>
               Upstream Asset Substitution
             </span>
 
-            <div className="p-4 rounded-xl bg-brand-bg-deep border border-brand-border space-y-4">
-              <div className="p-3 rounded-lg bg-brand-panel-elevated/40 border border-brand-border space-y-1">
+            <div className="p-4 rounded-xl bg-brand-bg-deep/65 backdrop-blur-sm border border-brand-border space-y-4">
+              <div className="p-3 rounded-lg bg-brand-panel-elevated/50 backdrop-blur-sm border border-brand-border space-y-1">
                 <span className="text-[10px] font-mono text-quorum-green-light uppercase">
                   Consensus of 3 Independent Builders (Source Code Parity)
                 </span>
@@ -110,7 +110,7 @@ export const TamperSimulator: React.FC<TamperSimulatorProps> = ({ scenario }) =>
                 <ArrowDown className="w-4 h-4" />
               </div>
 
-              <div className="p-3 rounded-lg bg-quorum-red-bg/50 border border-quorum-red-border space-y-1">
+              <div className="p-3 rounded-lg bg-quorum-red-bg/40 backdrop-blur-sm border border-quorum-red-border space-y-1">
                 <span className="text-[10px] font-mono text-quorum-red-light uppercase">
                   Published Binary Hash Downloaded by End User
                 </span>
@@ -128,21 +128,21 @@ export const TamperSimulator: React.FC<TamperSimulatorProps> = ({ scenario }) =>
               Cryptographic Attestation Verification
             </span>
 
-            <div className="p-4 rounded-xl bg-brand-bg-deep border border-brand-border space-y-3">
-              <div className="flex items-center justify-between p-2.5 rounded-lg bg-brand-panel-elevated/40 border border-brand-border text-xs">
+            <div className="p-4 rounded-xl bg-brand-bg-deep/65 backdrop-blur-sm border border-brand-border space-y-3">
+              <div className="flex items-center justify-between p-2.5 rounded-lg bg-brand-panel-elevated/50 backdrop-blur-sm border border-brand-border text-xs">
                 <span className="font-mono text-white">Builder 01 (Northstar)</span>
-                <span className="font-mono text-quorum-green">ED25519: VALID</span>
+                <span className="font-mono text-quorum-green">Ed25519: VALID</span>
               </div>
-              <div className="flex items-center justify-between p-2.5 rounded-lg bg-brand-panel-elevated/40 border border-brand-border text-xs">
+              <div className="flex items-center justify-between p-2.5 rounded-lg bg-brand-panel-elevated/50 backdrop-blur-sm border border-brand-border text-xs">
                 <span className="font-mono text-white">Builder 02 (Parallax)</span>
-                <span className="font-mono text-quorum-green">ED25519: VALID</span>
+                <span className="font-mono text-quorum-green">Ed25519: VALID</span>
               </div>
-              <div className="flex items-center justify-between p-2.5 rounded-lg bg-quorum-red-bg/40 border border-quorum-red-border text-xs">
+              <div className="flex items-center justify-between p-2.5 rounded-lg bg-quorum-red-bg/30 backdrop-blur-sm border border-quorum-red-border text-xs">
                 <span className="font-mono text-white">Builder 03 (Untrusted Node)</span>
-                <span className="font-mono text-quorum-red font-bold">ED25519: SIGNATURE INVALID</span>
+                <span className="font-mono text-quorum-red font-bold">Ed25519: SIGNATURE INVALID</span>
               </div>
 
-              <div className="p-2 text-[11px] font-mono text-quorum-red-light bg-quorum-red-bg/20 rounded border border-quorum-red-border/50 text-center">
+              <div className="p-2 text-[11px] font-mono text-quorum-red-light bg-quorum-red-bg/20 backdrop-blur-sm rounded border border-quorum-red-border/50 text-center">
                 Attestation 03 discarded prior to quorum aggregation.
               </div>
             </div>
@@ -155,9 +155,9 @@ export const TamperSimulator: React.FC<TamperSimulatorProps> = ({ scenario }) =>
               Merkle State Root Comparison
             </span>
 
-            <div className="p-4 rounded-xl bg-brand-bg-deep border border-brand-border space-y-4">
+            <div className="p-4 rounded-xl bg-brand-bg-deep/65 backdrop-blur-sm border border-brand-border space-y-4">
               <div className="space-y-2 text-xs">
-                <div className="p-2.5 rounded-lg bg-brand-panel-elevated/40 border border-brand-border">
+                <div className="p-2.5 rounded-lg bg-brand-panel-elevated/50 backdrop-blur-sm border border-brand-border">
                   <span className="text-[10px] text-brand-muted uppercase block">
                     Original On-Chain Contract Merkle Root:
                   </span>
@@ -166,7 +166,7 @@ export const TamperSimulator: React.FC<TamperSimulatorProps> = ({ scenario }) =>
                   </div>
                 </div>
 
-                <div className="p-2.5 rounded-lg bg-purple-950/40 border border-purple-800/60">
+                <div className="p-2.5 rounded-lg bg-purple-950/30 backdrop-blur-sm border border-purple-800/60">
                   <span className="text-[10px] text-purple-300 uppercase block">
                     Recomputed Evidence Hash from Database Record:
                   </span>
@@ -176,7 +176,7 @@ export const TamperSimulator: React.FC<TamperSimulatorProps> = ({ scenario }) =>
                 </div>
               </div>
 
-              <div className="p-3 rounded-lg bg-purple-950/60 border border-purple-700 text-center text-xs font-mono font-bold text-purple-200">
+              <div className="p-3 rounded-lg bg-purple-950/50 backdrop-blur-sm border border-purple-700 text-center text-xs font-mono font-bold text-purple-200">
                 AUDIT INTEGRITY FAILED: Cryptographic Root Mismatch
               </div>
             </div>
@@ -184,7 +184,7 @@ export const TamperSimulator: React.FC<TamperSimulatorProps> = ({ scenario }) =>
         )}
 
         {scenario.id === 'valid' && (
-          <div className="p-4 rounded-xl bg-brand-bg-deep border border-brand-border space-y-3">
+          <div className="p-4 rounded-xl bg-brand-bg-deep/65 backdrop-blur-sm border border-brand-border space-y-3">
             <div className="flex items-center gap-2 text-xs font-semibold text-quorum-green-light">
               <ShieldCheck className="w-4 h-4 text-quorum-green" />
               <span>Full Deterministic Multi-Builder Consensus</span>

@@ -512,18 +512,11 @@ class QuorumApiService {
   }
 
   public async getVerification(releaseId: string): Promise<VerificationResult> {
-    if (!this.isMockMode() || this.strictBackendMode) {
-      try {
-        const res = await fetch(`${API_BASE}/releases/${encodeURIComponent(releaseId)}/verification`);
-        if (res.ok) return await res.json();
-        throw new BackendError(`Status ${res.status}`, res.status, `/releases/${releaseId}/verification`);
-      } catch (e: any) {
-        return this.handleFailure(`/releases/${releaseId}/verification`, e, () =>
-          getMockVerificationForScenario('valid', '2-of-3', releaseId)
-        );
-      }
-    }
-    return getMockVerificationForScenario('valid', '2-of-3', releaseId);
+    const endpoint = `/releases/${encodeURIComponent(releaseId)}`;
+    const res = await fetch(`${API_BASE}${endpoint}`);
+    if (!res.ok) throw new BackendError(`Status ${res.status}; no mock decision substituted`, res.status, endpoint);
+    const data = await res.json() as ApiVerificationResponse;
+    return mapVerificationResponse(data, data.threshold === 3 ? '3-of-3' : '2-of-3');
   }
 
   public async getAudit(releaseId: string): Promise<AuditReport> {

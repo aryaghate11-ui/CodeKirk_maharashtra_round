@@ -23,7 +23,7 @@ export const Card: React.FC<CardProps> = ({
   return (
     <div
       className={cn(
-        'rounded-xl border border-brand-border bg-brand-panel/85 backdrop-blur-md transition-all duration-200 overflow-hidden',
+        'rounded-xl border border-brand-border/70 bg-brand-panel/75 backdrop-blur-md shadow-panel transition-all duration-200 overflow-hidden',
         glowStyles[glow],
         className
       )}
@@ -53,7 +53,7 @@ export const CardHeader: React.FC<CardHeaderProps> = ({
   return (
     <div
       className={cn(
-        'px-5 py-4 border-b border-brand-border/70 flex items-center justify-between gap-3',
+        'px-5 py-4 border-b border-brand-border/60 bg-brand-panel-elevated/25 flex items-center justify-between gap-3',
         className
       )}
     >

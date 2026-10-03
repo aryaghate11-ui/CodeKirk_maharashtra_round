@@ -27,8 +27,8 @@ export const AppShell: React.FC<AppShellProps> = ({
 
   return (
     <div className="min-h-screen bg-brand-bg text-brand-text relative overflow-x-hidden">
-      {/* 3D Moving Block Drift Canvas Background (Behind all UI) */}
-      <BlockDriftBackground speed={0.9} centerClearRadius={24} />
+      {/* Official Originkit 3D Moving Block Drift Background (Behind all UI) */}
+      <BlockDriftBackground speed={12} clearCentre={3} />
 
       {/* Foreground Application Structure */}
       <div className="relative z-10 flex min-h-screen">

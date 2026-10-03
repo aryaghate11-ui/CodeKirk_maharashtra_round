@@ -67,19 +67,19 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
           onRetry={loadData}
         />
       )}
-      {/* Hero Technical Value Proposition Banner */}
-      <div className="p-6 rounded-2xl bg-gradient-to-r from-brand-panel via-brand-panel-elevated to-brand-panel border border-brand-border-bright/70 shadow-panel relative overflow-hidden">
+      {/* Hero Plain-English Value Proposition Banner */}
+      <div className="p-6 rounded-2xl bg-gradient-to-r from-brand-panel/80 via-brand-panel-elevated/75 to-brand-panel/80 backdrop-blur-md border border-brand-border-bright/70 shadow-panel relative overflow-hidden">
         <div className="relative z-10 flex flex-col md:flex-row md:items-center justify-between gap-6">
           <div className="space-y-2 max-w-2xl">
-            <div className="inline-flex items-center gap-2 px-2.5 py-0.5 rounded-full bg-quorum-green-bg border border-quorum-green-border text-[11px] font-mono font-semibold text-quorum-green-light">
+            <div className="inline-flex items-center gap-2 px-2.5 py-0.5 rounded-full bg-quorum-green-bg/80 border border-quorum-green-border/80 backdrop-blur-sm text-[11px] font-mono font-semibold text-quorum-green-light">
               <Sparkles className="w-3.5 h-3.5 text-quorum-green" />
-              Decentralized Reproducible Build Verification
+              Software Supply-Chain Verification
             </div>
             <h2 className="text-xl sm:text-2xl font-extrabold text-white tracking-tight">
-              Don't Trust the Binary. Trust the Builders.
+              Can we trust this software?
             </h2>
             <p className="text-xs sm:text-sm text-brand-muted leading-relaxed">
-              Quorum dispatches deterministic compilation jobs to geographically isolated, multi-environment builders. Bit-for-bit reproducible artifact SHA-256 hashes must reach consensus under configurable quorum policies before any binary is trusted.
+              Quorum compares signed build evidence from multiple independent builders before a software release is trusted. If builders disagree or an artifact was modified, Quorum flags the risk immediately.
             </p>
           </div>
 
@@ -88,33 +88,32 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
               onClick={() => onNavigate('verification')}
               className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold text-black bg-quorum-green hover:bg-quorum-green-light transition-all shadow-glow-green"
             >
-              <span>Verify Release</span>
+              <span>Verify a Release</span>
               <ArrowRight className="w-4 h-4" />
             </button>
             <button
               onClick={() => onNavigate('attack-lab')}
-              className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs font-semibold text-brand-text bg-brand-panel-elevated hover:bg-brand-panel border border-brand-border transition-colors"
+              className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs font-semibold text-brand-text bg-brand-panel-elevated/75 backdrop-blur-sm hover:bg-brand-panel/80 border border-brand-border transition-colors"
             >
-              <span>Explore Attack Lab</span>
+              <span>Try an Attack Scenario</span>
             </button>
           </div>
         </div>
       </div>
 
-      {/* Top 4 Metrics Cards */}
+      {/* Top 4 Real Backend Metrics Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <MetricCard
-          label="Releases Verified"
-          value={stats?.releasesVerified || 24}
-          subtext="Cryptographic consensus verified"
+          label="Verified Releases"
+          value={stats ? stats.releasesVerified : (loading ? '...' : 0)}
+          subtext="Unanimous or threshold quorum met"
           icon={<ShieldCheck className="w-5 h-5 text-quorum-green" />}
-          trend="+12% this week"
           variant="green"
         />
 
         <MetricCard
-          label="Releases Rejected"
-          value={stats?.releasesRejected || 5}
+          label="Rejected Releases"
+          value={stats ? stats.releasesRejected : (loading ? '...' : 0)}
           subtext="Tampered binaries or mismatch"
           icon={<ShieldAlert className="w-5 h-5 text-quorum-red" />}
           variant="red"
@@ -122,7 +121,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
 
         <MetricCard
           label="Conflicts Detected"
-          value={stats?.conflictsDetected || 3}
+          value={stats ? stats.conflictsDetected : (loading ? '...' : 0)}
           subtext="Builder divergence isolated"
           icon={<AlertTriangle className="w-5 h-5 text-quorum-amber" />}
           variant="amber"
@@ -130,8 +129,8 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
 
         <MetricCard
           label="Active Builders"
-          value={stats?.activeBuilders || 8}
-          subtext="Disparate execution nodes online"
+          value={stats ? stats.activeBuilders : (loading ? '...' : 0)}
+          subtext="Independent build nodes online"
           icon={<Server className="w-5 h-5 text-quorum-blue-light" />}
           variant="blue"
         />
@@ -143,15 +142,15 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
         <div className="lg:col-span-2 space-y-4">
           <Card>
             <CardHeader
-              title="Recent Monitored Releases"
-              subtitle="Software supply-chain artifacts evaluated by independent quorum"
+              title="Recent Releases"
+              subtitle="Software packages evaluated against independent builder consensus"
               icon={<ShieldCheck className="w-4 h-4 text-quorum-green" />}
               action={
                 <button
                   onClick={() => onNavigate('verification')}
                   className="text-xs text-quorum-green-light hover:underline font-mono font-medium flex items-center gap-1"
                 >
-                  View Primary Verifier <ArrowRight className="w-3 h-3" />
+                  View Verifier <ArrowRight className="w-3 h-3" />
                 </button>
               }
             />
@@ -169,8 +168,8 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
         <div className="space-y-4">
           <Card>
             <CardHeader
-              title="Live Verification Activity"
-              subtitle="Real-time consensus telemetry feed"
+              title="Recent Activity"
+              subtitle="Audit events recorded by the verification engine"
               icon={<Activity className="w-4 h-4 text-quorum-blue-light" />}
               badge={
                 <span className="w-2 h-2 rounded-full bg-quorum-green animate-pulse" />
@@ -184,7 +183,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
                   onClick={() => onNavigate('audit')}
                   className="w-full text-center text-xs font-mono text-brand-muted hover:text-white transition-colors"
                 >
-                  Inspect Full Immutable Audit Log →
+                  View Full Audit History →
                 </button>
               </div>
             </CardBody>

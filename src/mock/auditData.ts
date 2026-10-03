@@ -48,7 +48,7 @@ export const MOCK_AUDIT_EVENTS: AuditEvent[] = [
     timeFormatted: '14:32:09',
     type: 'SIGNATURE_VERIFIED',
     title: 'Cryptographic attestations verified',
-    description: '3 of 3 secp256k1 signatures validated against registered builder on-chain public keys.',
+    description: '3 of 3 Ed25519 signatures validated against registered builder public keys.',
     status: 'success',
   },
   {

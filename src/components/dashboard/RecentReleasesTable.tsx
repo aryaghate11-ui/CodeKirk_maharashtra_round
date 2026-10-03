@@ -19,19 +19,16 @@ export const RecentReleasesTable: React.FC<RecentReleasesTableProps> = ({
       <table className="w-full text-left text-xs">
         <thead>
           <tr className="border-b border-brand-border/70 text-brand-muted uppercase tracking-wider text-[11px] bg-brand-panel-elevated/40">
-            <th className="py-3 px-4 font-semibold">Package & Repo</th>
+            <th className="py-3 px-4 font-semibold">Package</th>
             <th className="py-3 px-4 font-semibold">Version</th>
-            <th className="py-3 px-4 font-semibold">Pinned Commit</th>
-            <th className="py-3 px-4 font-semibold text-center">Builders</th>
-            <th className="py-3 px-4 font-semibold text-center">Agreement</th>
-            <th className="py-3 px-4 font-semibold">Policy</th>
+            <th className="py-3 px-4 font-semibold text-center">Attestations</th>
             <th className="py-3 px-4 font-semibold">Status</th>
-            <th className="py-3 px-4 font-semibold">Verified</th>
             <th className="py-3 px-4 font-semibold text-right">Action</th>
           </tr>
         </thead>
         <tbody className="divide-y divide-brand-border/40">
           {releases.map((rel) => {
+            const isPassing = rel.agreement >= rel.policy.k;
             return (
               <tr
                 key={rel.id}
@@ -39,62 +36,39 @@ export const RecentReleasesTable: React.FC<RecentReleasesTableProps> = ({
                 className="hover:bg-brand-panel-elevated/40 cursor-pointer transition-colors duration-150 group"
               >
                 {/* Package */}
-                <td className="py-3.5 px-4 min-w-[190px]">
-                  <div className="font-semibold text-white group-hover:text-quorum-green-light transition-colors">
+                <td className="py-3.5 px-4 min-w-[200px]">
+                  <div className="font-semibold text-white group-hover:text-quorum-green-light transition-colors text-sm">
                     {rel.name}
                   </div>
-                  <div className="text-[11px] text-brand-muted font-mono truncate max-w-[210px] flex items-center gap-1">
-                    {rel.repo}
+                  <div className="text-[11px] text-brand-muted font-mono truncate max-w-[220px] flex items-center gap-1 mt-0.5">
+                    <span>{rel.repo}</span>
                     <ExternalLink className="w-2.5 h-2.5 opacity-60" />
                   </div>
                 </td>
 
                 {/* Version */}
                 <td className="py-3.5 px-4 font-mono font-medium text-brand-text">
-                  <span className="px-2 py-0.5 rounded bg-brand-bg-deep border border-brand-border text-[11px]">
+                  <span className="px-2.5 py-1 rounded bg-brand-bg-deep/70 backdrop-blur-sm border border-brand-border/70 text-xs text-white">
                     {rel.version}
                   </span>
                 </td>
 
-                {/* Commit */}
-                <td className="py-3.5 px-4 font-mono text-[11px] text-brand-muted">
-                  <div className="flex items-center gap-1">
-                    <span>{truncateHash(rel.commit, 7, 0)}</span>
-                    <CopyButton text={rel.commit} title="Copy commit hash" />
-                  </div>
-                </td>
-
-                {/* Builders */}
-                <td className="py-3.5 px-4 text-center font-mono text-xs text-brand-text">
-                  {rel.totalBuilders} Nodes
-                </td>
-
-                {/* Agreement */}
+                {/* Attestations Agreement */}
                 <td className="py-3.5 px-4 text-center">
                   <span
-                    className={`font-mono text-xs font-semibold px-2 py-0.5 rounded ${
-                      rel.agreement >= rel.policy.k
-                        ? 'bg-quorum-green-bg text-quorum-green-light border border-quorum-green-border'
-                        : 'bg-quorum-red-bg text-quorum-red-light border border-quorum-red-border'
+                    className={`font-mono text-xs font-semibold px-2.5 py-1 rounded inline-flex items-center gap-1 backdrop-blur-sm ${
+                      isPassing
+                        ? 'bg-quorum-green-bg/80 text-quorum-green-light border border-quorum-green-border/80'
+                        : 'bg-quorum-amber-bg/80 text-quorum-amber-light border border-quorum-amber-border/80'
                     }`}
                   >
-                    {rel.agreement} / {rel.totalBuilders}
+                    <span>{rel.agreement} of {rel.totalBuilders} agreed</span>
                   </span>
-                </td>
-
-                {/* Policy */}
-                <td className="py-3.5 px-4 font-mono text-xs text-brand-muted">
-                  {rel.policy.k}-of-{rel.policy.n}
                 </td>
 
                 {/* Status */}
                 <td className="py-3.5 px-4">
                   <DecisionBadge decision={rel.status} size="sm" />
-                </td>
-
-                {/* Time */}
-                <td className="py-3.5 px-4 text-[11px] text-brand-subtle whitespace-nowrap">
-                  {formatRelativeTime(rel.createdAt)}
                 </td>
 
                 {/* Action */}
@@ -104,10 +78,10 @@ export const RecentReleasesTable: React.FC<RecentReleasesTableProps> = ({
                       e.stopPropagation();
                       onSelectRelease(rel.id);
                     }}
-                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded text-xs font-medium text-brand-muted hover:text-white hover:bg-brand-panel-elevated border border-brand-border transition-all"
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-brand-text hover:text-white bg-brand-panel-elevated/70 backdrop-blur-sm hover:bg-brand-panel border border-brand-border/70 transition-all"
                   >
                     <span>Inspect</span>
-                    <ArrowRight className="w-3 h-3 group-hover:translate-x-0.5 transition-transform" />
+                    <ArrowRight className="w-3.5 h-3.5 group-hover:translate-x-0.5 transition-transform text-quorum-green" />
                   </button>
                 </td>
               </tr>

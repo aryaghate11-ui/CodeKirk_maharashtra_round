@@ -8,7 +8,6 @@ import {
   Server,
   KeyRound,
   Cpu,
-  Globe2,
   Clock,
   ShieldCheck,
   CheckCircle2,
@@ -26,7 +25,7 @@ export const BuilderCard: React.FC<BuilderCardProps> = ({ builder, index }) => {
         {/* Card Header */}
         <div className="flex items-start justify-between">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-brand-panel-elevated border border-brand-border grid place-items-center font-mono text-sm font-bold text-quorum-green">
+            <div className="w-10 h-10 rounded-xl bg-brand-panel-elevated/80 backdrop-blur-sm border border-brand-border grid place-items-center font-mono text-sm font-bold text-quorum-green">
               {builder.shortCode}
             </div>
             <div>
@@ -35,7 +34,7 @@ export const BuilderCard: React.FC<BuilderCardProps> = ({ builder, index }) => {
                   {builder.name}
                 </h4>
                 <span className="text-[10px] font-mono text-brand-subtle">
-                  #{String(index + 1).padStart(2, '0')}
+                  Node #{String(index + 1).padStart(2, '0')}
                 </span>
               </div>
               <p className="text-xs text-brand-muted truncate max-w-[200px]">
@@ -49,46 +48,37 @@ export const BuilderCard: React.FC<BuilderCardProps> = ({ builder, index }) => {
 
         {/* Technical Specs Matrix */}
         <div className="space-y-2 pt-1 text-xs">
-          {/* Address */}
-          <div className="flex items-center justify-between p-2 rounded-lg bg-brand-bg-deep/60 border border-brand-border">
+          {/* Public Key */}
+          <div className="flex items-center justify-between p-2 rounded-lg bg-brand-bg-deep/65 backdrop-blur-sm border border-brand-border/60">
             <span className="text-brand-muted flex items-center gap-1.5 text-[11px]">
               <KeyRound className="w-3 h-3 text-brand-subtle" />
-              Public Key
+              Public Key (Ed25519)
             </span>
             <div className="flex items-center gap-1 font-mono text-[11px] text-white">
-              <span>{truncateAddress(builder.address, 6, 4)}</span>
-              <CopyButton text={builder.address} title="Copy builder address" />
+              <span>{truncateAddress(builder.address, 8, 6)}</span>
+              <CopyButton text={builder.address} title="Copy builder public key" />
             </div>
           </div>
 
-          {/* Environment */}
-          <div className="flex items-center justify-between p-2 rounded-lg bg-brand-bg-deep/60 border border-brand-border">
+          {/* Sandbox Runtime / Environment */}
+          <div className="flex items-center justify-between p-2 rounded-lg bg-brand-bg-deep/65 backdrop-blur-sm border border-brand-border/60">
             <span className="text-brand-muted flex items-center gap-1.5 text-[11px]">
               <Cpu className="w-3 h-3 text-brand-subtle" />
-              Sandbox Runtime
+              Platform / Sandbox
             </span>
-            <span className="font-mono text-[11px] text-brand-text truncate max-w-[190px]">
+            <span className="font-mono text-[11px] text-brand-text truncate max-w-[210px]" title={builder.environment}>
               {builder.environment}
             </span>
           </div>
 
-          {/* Region / Node Location */}
-          <div className="flex items-center justify-between p-2 rounded-lg bg-brand-bg-deep/60 border border-brand-border">
-            <span className="text-brand-muted flex items-center gap-1.5 text-[11px]">
-              <Globe2 className="w-3 h-3 text-brand-subtle" />
-              Deployment Region
-            </span>
-            <span className="text-[11px] text-brand-muted">{builder.region}</span>
-          </div>
-
           {/* Last Artifact Hash */}
-          <div className="flex items-center justify-between p-2 rounded-lg bg-brand-bg-deep/60 border border-brand-border">
+          <div className="flex items-center justify-between p-2 rounded-lg bg-brand-bg-deep/65 backdrop-blur-sm border border-brand-border/60">
             <span className="text-brand-muted flex items-center gap-1.5 text-[11px]">
               <ShieldCheck className="w-3 h-3 text-brand-subtle" />
-              Latest SHA-256
+              Latest Artifact SHA-256
             </span>
             <div className="flex items-center gap-1 font-mono text-[11px] text-quorum-green-light">
-              <span>{truncateHash(builder.lastArtifactHash, 6, 4)}</span>
+              <span>{truncateHash(builder.lastArtifactHash, 7, 5)}</span>
               <CopyButton text={builder.lastArtifactHash} title="Copy latest artifact hash" />
             </div>
           </div>
@@ -98,7 +88,7 @@ export const BuilderCard: React.FC<BuilderCardProps> = ({ builder, index }) => {
         <div className="pt-3 border-t border-brand-border/60 flex items-center justify-between text-[11px] font-mono">
           <div className="flex items-center gap-1.5 text-brand-muted">
             <Clock className="w-3 h-3 text-brand-subtle" />
-            <span>Latest attestation:</span>
+            <span>Latest build:</span>
             <span className="text-white">{formatRelativeTime(builder.latestAttestationTime)}</span>
           </div>
 

@@ -76,8 +76,8 @@ export const SCENARIO_DEFINITIONS: Record<string, ScenarioDefinition> = {
     id: 'invalidSignature',
     name: 'Invalid Builder Signature — Rogue Node Injection',
     badge: 'Cryptographic Failure',
-    subtitle: 'An unauthenticated node or forged attestation is detected during ECDSA verification.',
-    description: 'Builder 03 attempts to submit an attestation with a malformed or forged secp256k1 cryptographic signature. The verification pipeline discards the attestation before quorum calculation.',
+    subtitle: 'An unauthenticated node or forged attestation is detected during Ed25519 verification.',
+    description: 'Builder 03 attempts to submit an attestation with a malformed or forged Ed25519 cryptographic signature. The verification pipeline discards the attestation before quorum calculation.',
     threatModel: 'Protects against man-in-the-middle attestation spoofing and unauthorized build operators.',
     builderHashes: {
       builder01: HASH_CANONICAL,
@@ -92,7 +92,7 @@ export const SCENARIO_DEFINITIONS: Record<string, ScenarioDefinition> = {
     expectedDecision2of3: 'ACCEPTED', // 2 valid signatures remain
     expectedDecision3of3: 'REJECTED', // strictly requires 3 valid
     auditHashMatch: true,
-    explanation: 'Attestation from Builder 03 rejected: Cryptographic signature verification failed (invalid secp256k1 signature). 2 valid attestations remain.',
+    explanation: 'Attestation from Builder 03 rejected: Cryptographic signature verification failed (invalid Ed25519 signature). 2 valid attestations remain.',
   },
   auditTampering: {
     id: 'auditTampering',

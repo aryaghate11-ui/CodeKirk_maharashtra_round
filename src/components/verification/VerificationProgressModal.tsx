@@ -51,7 +51,7 @@ export const VerificationProgressModal: React.FC<VerificationProgressModalProps>
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-md animate-fade-in">
-      <div className="w-full max-w-md bg-brand-panel border border-brand-border rounded-2xl shadow-2xl p-6 space-y-6">
+      <div className="w-full max-w-md bg-brand-panel/85 backdrop-blur-md border border-brand-border/80 rounded-2xl shadow-2xl p-6 space-y-6">
         {/* Header */}
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 rounded-xl bg-quorum-green-bg border border-quorum-green-border grid place-items-center text-quorum-green">
@@ -82,7 +82,7 @@ export const VerificationProgressModal: React.FC<VerificationProgressModalProps>
                   isCompleted
                     ? 'bg-quorum-green-bg/30 border-quorum-green-border/50 text-white'
                     : isCurrent
-                    ? 'bg-brand-panel-elevated border-brand-border-bright text-white shadow-sm'
+                    ? 'bg-brand-panel-elevated/80 backdrop-blur-sm border-brand-border-bright text-white shadow-sm'
                     : 'bg-transparent border-transparent text-brand-subtle'
                 }`}
               >
