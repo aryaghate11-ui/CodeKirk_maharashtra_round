@@ -35,10 +35,20 @@ export const ReleaseVerificationPage: React.FC<ReleaseVerificationPageProps> = (
   const [allReleases, setAllReleases] = useState<Release[]>([]);
   const [selectedRelId, setSelectedRelId] = useState(selectedReleaseId);
 
-  const loadVerification = async (scenario: ScenarioId, policy: '2-of-3' | '3-of-3') => {
+  useEffect(() => {
+    if (selectedReleaseId) {
+      setSelectedRelId(selectedReleaseId);
+    }
+  }, [selectedReleaseId]);
+
+  const loadVerification = async (
+    scenario: ScenarioId,
+    policy: '2-of-3' | '3-of-3',
+    relId: string = selectedRelId
+  ) => {
     setIsLoading(true);
     try {
-      const data = await api.runDemoScenario(scenario, policy);
+      const data = await api.runDemoScenario(scenario, policy, relId);
       setVerification(data);
     } catch (err) {
       console.error('Failed to run verification', err);
@@ -52,8 +62,8 @@ export const ReleaseVerificationPage: React.FC<ReleaseVerificationPageProps> = (
   }, []);
 
   useEffect(() => {
-    loadVerification(currentScenario, activePolicyType);
-  }, [currentScenario, activePolicyType]);
+    loadVerification(currentScenario, activePolicyType, selectedRelId);
+  }, [currentScenario, activePolicyType, selectedRelId]);
 
   const handleRunVerification = () => {
     setIsVerifyingModalOpen(true);
@@ -61,7 +71,7 @@ export const ReleaseVerificationPage: React.FC<ReleaseVerificationPageProps> = (
 
   const handleModalFinished = () => {
     setIsVerifyingModalOpen(false);
-    loadVerification(currentScenario, activePolicyType);
+    loadVerification(currentScenario, activePolicyType, selectedRelId);
   };
 
   if (!verification) {
@@ -100,6 +110,25 @@ export const ReleaseVerificationPage: React.FC<ReleaseVerificationPageProps> = (
 
             {/* Quick Interactive Scenario Controller for Judges */}
             <div className="flex flex-wrap items-center gap-2.5 bg-brand-bg-deep/80 p-2 rounded-xl border border-brand-border">
+              {allReleases.length > 0 && (
+                <div className="space-y-0.5">
+                  <span className="text-[10px] font-mono text-brand-subtle block px-1">
+                    PACKAGE:
+                  </span>
+                  <select
+                    value={selectedRelId}
+                    onChange={(e) => setSelectedRelId(e.target.value)}
+                    className="bg-brand-panel-elevated text-xs font-medium text-white border border-brand-border-bright rounded-lg px-2.5 py-1.5 outline-none cursor-pointer focus:ring-1 focus:ring-quorum-green max-w-[150px] truncate"
+                  >
+                    {allReleases.map((r) => (
+                      <option key={r.id} value={r.id}>
+                        {r.name} ({r.version})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
               <div className="space-y-0.5">
                 <span className="text-[10px] font-mono text-brand-subtle block px-1">
                   DEMO SCENARIO:

@@ -1,5 +1,5 @@
 import { ScenarioDefinition, VerificationResult } from '../types';
-import { MOCK_BUILDERS, DEFAULT_POLICY, STRICT_POLICY } from './data';
+import { MOCK_BUILDERS, MOCK_RELEASES, DEFAULT_POLICY, STRICT_POLICY } from './data';
 
 export const HASH_CANONICAL = '91ac82e8f192b0c441a980753d08154e1933ba20ef41680199d74e0d9b431718';
 export const HASH_DIVERGENT = '43ff7299a80192e448b209d1715019a3b610c492817452d00194857bba108f91';
@@ -118,9 +118,15 @@ export const SCENARIO_DEFINITIONS: Record<string, ScenarioDefinition> = {
   },
 };
 
-export function getMockVerificationForScenario(scenarioId: string, policyType: '2-of-3' | '3-of-3' = '2-of-3'): VerificationResult {
+export function getMockVerificationForScenario(
+  scenarioId: string,
+  policyType: '2-of-3' | '3-of-3' = '2-of-3',
+  releaseId: string = 'rel-hey-01'
+): VerificationResult {
   const scenario = SCENARIO_DEFINITIONS[scenarioId] || SCENARIO_DEFINITIONS.valid;
   const policy = policyType === '3-of-3' ? STRICT_POLICY : DEFAULT_POLICY;
+
+  const matchedRelease = MOCK_RELEASES.find((r) => r.id === releaseId) || MOCK_RELEASES[0];
 
   const b1 = MOCK_BUILDERS[0];
   const b2 = MOCK_BUILDERS[1];
@@ -130,7 +136,7 @@ export function getMockVerificationForScenario(scenarioId: string, policyType: '
   const attestations = [
     {
       id: 'att-01',
-      releaseId: 'rel-hey-01',
+      releaseId: matchedRelease.id,
       builderId: b1.id,
       builderName: b1.name,
       builderAddress: b1.address,
@@ -145,7 +151,7 @@ export function getMockVerificationForScenario(scenarioId: string, policyType: '
     },
     {
       id: 'att-02',
-      releaseId: 'rel-hey-01',
+      releaseId: matchedRelease.id,
       builderId: b2.id,
       builderName: b2.name,
       builderAddress: b2.address,
@@ -160,7 +166,7 @@ export function getMockVerificationForScenario(scenarioId: string, policyType: '
     },
     {
       id: 'att-03',
-      releaseId: 'rel-hey-01',
+      releaseId: matchedRelease.id,
       builderId: b3.id,
       builderName: b3.name,
       builderAddress: b3.address,
@@ -209,17 +215,9 @@ export function getMockVerificationForScenario(scenarioId: string, policyType: '
 
   return {
     release: {
-      id: 'rel-hey-01',
-      name: 'hey',
-      repo: 'github.com/rakyll/hey',
-      version: 'v0.1.5',
-      commit: 'f7f0f8b6330c6c7f2c129e92a488e17db14df39c',
-      artifactName: 'hey-linux-amd64',
-      target: 'linux / amd64',
-      createdAt: new Date(now - 120 * 1000).toISOString(),
-      publishedArtifactHash: scenario.id === 'tampered' ? HASH_MALICIOUS : HASH_CANONICAL,
+      ...matchedRelease,
+      publishedArtifactHash: scenario.id === 'tampered' ? HASH_MALICIOUS : matchedRelease.publishedArtifactHash,
       agreement: maxAgreement,
-      totalBuilders: 3,
       policy,
       status: decision,
     },
