@@ -1,0 +1,21 @@
+{
+  "schema_version": "quorum.builder-config.v1",
+  "builder": {
+    "id": "laptop-two",
+    "name": "Laptop Two Witness",
+    "operator": "Laptop Two",
+    "runtime": "native-windows"
+  },
+  "source": {
+    "repository_url": "https://github.com/rakyll/hey",
+    "commit": "e64ec7a3ad1ef8bc828fe61e1fb324cc2e74c604"
+  },
+  "build": {
+    "toolchain": "go1.27.1",
+    "goos": "linux",
+    "goarch": "amd64",
+    "cgo_enabled": "0",
+    "artifact_name": "hey-linux-amd64",
+    "command": ["go", "build", "-trimpath", "-buildvcs=false", "-ldflags=-buildid=", "-o", "{artifact}", "./"]
+  }
+}

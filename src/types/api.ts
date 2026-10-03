@@ -36,10 +36,25 @@ export interface ApiReleaseRecord {
   recipe_sha256: string;
   candidate_sha256: string;
   threshold: number;
+  expected_builders: number;
   reject_on_conflict: boolean;
   status: ApiVerificationStatus;
   consensus_sha256: string | null;
   created_at: string;
+}
+
+export interface ApiBuilderRegistryResponse {
+  id: string;
+  name: string;
+  operator: string;
+  platform: string;
+  signing_key_fingerprint: string;
+  trusted: boolean;
+  created_at: string;
+  latest_artifact_sha256: string | null;
+  latest_attestation_at: string | null;
+  total_builds: number;
+  agreement_rate: number;
 }
 
 export interface ApiAuditEvent {

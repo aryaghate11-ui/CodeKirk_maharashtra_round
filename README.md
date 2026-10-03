@@ -26,13 +26,35 @@ The SQLite database is created at `backend/data/quorum.db` and is intentionally 
 - Versioned API contract shared by the FastAPI backend and React frontend
 - Consumer-side SHA-256 hashing (the selected file never leaves the browser)
 - Static fallback mode for the hosted dashboard
+- Real pinned-commit Go builder agent with isolated workspaces
+- Three separately keyed builder profiles and GitHub Actions witness workflow
 
 The demo builder keys are deterministic and exist only to demonstrate the end-to-end signature flow. Real builders must use separately generated private keys stored outside the repository.
+
+## Run the real three-builder proof
+
+Install the pinned Go `1.27.1` toolchain, start Quorum with `start.ps1`, then open a second PowerShell window:
+
+```powershell
+.venv\Scripts\python.exe scripts\run_three_builders.py
+```
+
+To prove disagreement handling with real signed evidence:
+
+```powershell
+.venv\Scripts\python.exe scripts\run_three_builders.py --tamper-builder laptop-two
+```
+
+This local command uses three fresh workspaces and three separate signing keys on one host. It proves the protocol, reproducibility, signature checks, quorum decision, and conflict detection. To claim real operational decentralization, run the three profiles on GitHub Actions and two independently controlled laptops as described in `docs/BUILDER_AGENT.md`.
 
 ## API v1
 
 - `GET /api/v1/health`
 - `GET /api/v1/stats`
+- `GET /api/v1/builders`
+- `POST /api/v1/builders`
+- `POST /api/v1/releases`
+- `POST /api/v1/releases/{release_id}/attestations`
 - `POST /api/v1/demo/verify`
 - `GET /api/v1/releases`
 - `GET /api/v1/releases/{release_id}`

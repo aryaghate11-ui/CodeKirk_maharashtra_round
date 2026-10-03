@@ -3,8 +3,7 @@ import { BuilderCard } from '../components/builders/BuilderCard';
 import { BuilderDiversityWidget } from '../components/builders/BuilderDiversityWidget';
 import { Builder } from '../types';
 import { api } from '../services/api';
-import { Server, ShieldCheck, Cpu, HardDrive } from 'lucide-react';
-import { Card, CardHeader, CardBody } from '../components/common/Card';
+import { Server, ShieldCheck } from 'lucide-react';
 
 export const BuildersPage: React.FC = () => {
   const [builders, setBuilders] = useState<Builder[]>([]);
@@ -30,7 +29,7 @@ export const BuildersPage: React.FC = () => {
             Independent Witness Nodes
           </h3>
           <p className="text-xs text-brand-muted mt-0.5">
-            Decentralized node operators executing hermetic reproducible builds from pinned source commits.
+            Separately keyed witnesses rebuilding the same pinned source commit and signing their result.
           </p>
         </div>
 
@@ -53,7 +52,7 @@ export const BuildersPage: React.FC = () => {
           Why Multiple Independent Builders?
         </h4>
         <p className="leading-relaxed">
-          Traditional CI/CD pipelines represent single points of failure (compromised credentials, compromised runner images, or targeted compiler backdoors like Ken Thompson's "Reflections on Trusting Trust"). Quorum requires distinct legal entities, cloud regions, and sandboxing runtimes (Docker, Podman, and Firecracker microVMs) to rebuild source code independently before cryptographic signing.
+          Separate signing keys make each statement attributable. For a real deployment, run these identities on machines controlled by different people or services. The local three-builder command proves the protocol and conflict handling, but it is intentionally labelled as same-host isolation rather than full real-world decentralization.
         </p>
       </div>
     </div>

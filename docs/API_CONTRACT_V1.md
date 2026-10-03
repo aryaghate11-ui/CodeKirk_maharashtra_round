@@ -22,6 +22,33 @@ static HTML fallback cannot be mistaken for the backend.
 Returns live release totals and trusted-builder counts from SQLite. The frontend
 maps these wire-format `snake_case` fields into its display model.
 
+### `GET /api/v1/builders`
+
+Returns the trusted builder registry, public-key fingerprints, latest signed
+artifact hash, build count and measured agreement rate. Private keys are never
+stored by the API.
+
+### `POST /api/v1/builders`
+
+Enrolls a builder's Ed25519 public key and display metadata. A builder ID is
+permanently bound to its first key; attempting to replace that key returns
+`409 Conflict`.
+
+### `POST /api/v1/releases`
+
+Registers the pinned repository URL, full source commit, artifact name, build
+recipe SHA-256, candidate artifact SHA-256 and quorum policy. `expected_builders`
+belongs to this release, so unrelated builders in the registry do not keep a
+decision pending.
+
+### `POST /api/v1/releases/{release_id}/attestations`
+
+Accepts a `quorum.attestation.v2` statement from one registered builder. The
+API recreates the canonical signed payload, verifies the Ed25519 signature and
+then reevaluates quorum and conflict rules. The v2 signed payload excludes API
+timestamps and release IDs so separately produced evidence can be transported
+to the verifier without first trusting that verifier.
+
 ### `POST /api/v1/demo/verify`
 
 Creates and evaluates a signed demonstration release.

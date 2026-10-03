@@ -1,3 +1,4 @@
+import base64
 import os
 import tempfile
 import unittest
@@ -7,6 +8,7 @@ from pathlib import Path
 os.environ["QUORUM_DB_PATH"] = str(Path(tempfile.gettempdir()) / "quorum-test.db")
 
 from backend import main  # noqa: E402
+from builder import agent  # noqa: E402
 
 
 class QuorumDecisionTests(unittest.TestCase):
@@ -126,6 +128,97 @@ class QuorumDecisionTests(unittest.TestCase):
         self.assertFalse(result["hash_matches"])
         record = main.get_release_record(verification["release_id"])
         self.assertEqual(record["audit_events"][-1]["event_type"], "consumer.artifact.verified")
+
+    def test_real_builder_v2_attestation_reaches_verified_quorum(self):
+        private_keys = [main.Ed25519PrivateKey.generate() for _ in range(2)]
+        builder_ids = ("test-witness-one", "test-witness-two")
+        for builder_id, private_key in zip(builder_ids, private_keys):
+            main.register_builder(
+                main.BuilderRegistrationRequest(
+                    id=builder_id,
+                    name=builder_id.replace("-", " ").title(),
+                    operator=builder_id,
+                    platform="isolated test workspace",
+                    public_key=main.encode_public_key(private_key.public_key()),
+                )
+            )
+
+        created = main.create_release(
+            main.ReleaseCreate(
+                repository_url="https://github.com/rakyll/hey",
+                source_commit=main.DEMO_SOURCE_COMMIT,
+                artifact_name="hey-linux-amd64",
+                recipe_sha256=main.DEMO_RECIPE_SHA256,
+                candidate_sha256=main.GOOD_ARTIFACT_SHA256,
+                threshold=2,
+                expected_builders=2,
+            )
+        )
+        result = None
+        for builder_id, private_key in zip(builder_ids, private_keys):
+            unsigned = main.AttestationCreate(
+                schema_version=main.REAL_ATTESTATION_SCHEMA,
+                builder_id=builder_id,
+                artifact_sha256=main.GOOD_ARTIFACT_SHA256,
+                environment="isolated test workspace",
+                built_at=main.utc_now(),
+                signature="pending",
+            )
+            with main.connect() as db:
+                release = db.execute(
+                    "SELECT * FROM releases WHERE id = ?", (created["id"],)
+                ).fetchone()
+            signature = private_key.sign(
+                main.canonical_json(main.attestation_payload(release, unsigned)).encode()
+            )
+            signed = unsigned.model_copy(
+                update={"signature": base64.b64encode(signature).decode()}
+            )
+            result = main.submit_attestation(created["id"], signed)
+
+        self.assertEqual(result["status"], "verified")
+        self.assertEqual(
+            {evidence["attestation_schema"] for evidence in result["builders"]},
+            {main.REAL_ATTESTATION_SCHEMA},
+        )
+
+    def test_builder_identity_cannot_silently_replace_its_key(self):
+        first_key = main.Ed25519PrivateKey.generate()
+        second_key = main.Ed25519PrivateKey.generate()
+        request = main.BuilderRegistrationRequest(
+            id="stable-witness",
+            name="Stable Witness",
+            operator="Independent Operator",
+            platform="test environment",
+            public_key=main.encode_public_key(first_key.public_key()),
+        )
+        main.register_builder(request)
+        with self.assertRaises(main.HTTPException) as error:
+            main.register_builder(
+                request.model_copy(
+                    update={
+                        "public_key": main.encode_public_key(second_key.public_key())
+                    }
+                )
+            )
+        self.assertEqual(error.exception.status_code, 409)
+
+    def test_all_builder_configs_share_one_reproducible_recipe(self):
+        root = Path(__file__).resolve().parents[1]
+        configs = [
+            agent.load_config(root / "configs" / "builders" / filename)
+            for filename in (
+                "github-actions.json",
+                "laptop-one.json",
+                "laptop-two.json",
+            )
+        ]
+        self.assertEqual(len({agent.recipe_sha256(config) for config in configs}), 1)
+        payload = agent.signed_payload(
+            configs[0], main.GOOD_ARTIFACT_SHA256, "test environment"
+        )
+        self.assertNotIn("release_id", payload)
+        self.assertNotIn("built_at", payload)
 
 
 if __name__ == "__main__":

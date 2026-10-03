@@ -12,3 +12,7 @@ yarn-error.log*
 __pycache__/
 *.py[cod]
 backend/data/
+
+# Local builder identities and generated evidence
+.quorum/
+builder-results/

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import hashlib
 import json
 import os
@@ -28,6 +29,7 @@ DEMO_RECIPE_SHA256 = "6cb431a152226cff3072c02dd2f6f6b187751d15452265b1b9e4cc2b30
 GOOD_ARTIFACT_SHA256 = "73bc91e478f14385f0a8fcd3388af75e0d7e0558fd9e343f59025a048cb5a20f"
 BAD_ARTIFACT_SHA256 = "badd09f10e8f9315c7c9e649a535311185f922c154a2ca58048c2ba5d42277c2"
 ATTESTATION_SCHEMA = "quorum.attestation.v1"
+REAL_ATTESTATION_SCHEMA = "quorum.attestation.v2"
 
 
 def utc_now() -> str:
@@ -68,6 +70,7 @@ def init_db() -> None:
                 recipe_sha256 TEXT NOT NULL,
                 candidate_sha256 TEXT NOT NULL,
                 threshold INTEGER NOT NULL DEFAULT 2,
+                expected_builders INTEGER NOT NULL DEFAULT 3,
                 reject_on_conflict INTEGER NOT NULL DEFAULT 1,
                 status TEXT NOT NULL DEFAULT 'pending',
                 consensus_sha256 TEXT,
@@ -111,6 +114,10 @@ def init_db() -> None:
         if "artifact_name" not in release_columns:
             db.execute(
                 "ALTER TABLE releases ADD COLUMN artifact_name TEXT NOT NULL DEFAULT 'release-artifact'"
+            )
+        if "expected_builders" not in release_columns:
+            db.execute(
+                "ALTER TABLE releases ADD COLUMN expected_builders INTEGER NOT NULL DEFAULT 3"
             )
         db.execute("PRAGMA optimize")
     seed_demo_builders()
@@ -174,15 +181,39 @@ class ReleaseCreate(BaseModel):
     recipe_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     candidate_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     threshold: int = Field(default=2, ge=1, le=20)
+    expected_builders: int = Field(default=3, ge=1, le=20)
     reject_on_conflict: bool = True
 
 
 class AttestationCreate(BaseModel):
+    schema_version: Literal["quorum.attestation.v1", "quorum.attestation.v2"] = ATTESTATION_SCHEMA
     builder_id: str
     artifact_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     environment: str = Field(min_length=3, max_length=200)
     built_at: str
     signature: str
+
+
+class BuilderRegistrationRequest(BaseModel):
+    id: str = Field(pattern=r"^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$")
+    name: str = Field(min_length=2, max_length=100)
+    operator: str = Field(min_length=2, max_length=100)
+    platform: str = Field(min_length=3, max_length=200)
+    public_key: str = Field(min_length=40, max_length=100)
+
+
+class BuilderRegistryResponse(BaseModel):
+    id: str
+    name: str
+    operator: str
+    platform: str
+    signing_key_fingerprint: str
+    trusted: bool
+    created_at: str
+    latest_artifact_sha256: str | None
+    latest_attestation_at: str | None
+    total_builds: int
+    agreement_rate: float
 
 
 class DemoRequest(BaseModel):
@@ -231,6 +262,7 @@ class ReleaseRecordResponse(BaseModel):
     recipe_sha256: str
     candidate_sha256: str
     threshold: int
+    expected_builders: int
     reject_on_conflict: bool
     status: str
     consensus_sha256: str | None
@@ -299,8 +331,8 @@ def create_release(data: ReleaseCreate) -> dict:
             """
             INSERT INTO releases
                 (id, repository_url, source_commit, artifact_name, recipe_sha256, candidate_sha256,
-                 threshold, reject_on_conflict, status, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+                 threshold, expected_builders, reject_on_conflict, status, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
             """,
             (
                 release_id,
@@ -310,6 +342,7 @@ def create_release(data: ReleaseCreate) -> dict:
                 data.recipe_sha256,
                 data.candidate_sha256,
                 data.threshold,
+                data.expected_builders,
                 int(data.reject_on_conflict),
                 utc_now(),
             ),
@@ -329,6 +362,17 @@ def create_release(data: ReleaseCreate) -> dict:
 
 
 def attestation_payload(release: sqlite3.Row, data: AttestationCreate) -> dict:
+    if data.schema_version == REAL_ATTESTATION_SCHEMA:
+        return {
+            "schema_version": REAL_ATTESTATION_SCHEMA,
+            "repository_url": release["repository_url"],
+            "artifact_sha256": data.artifact_sha256,
+            "artifact_name": release["artifact_name"],
+            "builder_id": data.builder_id,
+            "environment_sha256": hashlib.sha256(data.environment.encode()).hexdigest(),
+            "recipe_sha256": release["recipe_sha256"],
+            "source_commit": release["source_commit"],
+        }
     return {
         "schema_version": ATTESTATION_SCHEMA,
         "repository_url": release["repository_url"],
@@ -357,7 +401,7 @@ def submit_attestation(release_id: str, data: AttestationCreate) -> dict:
         try:
             public_key = Ed25519PublicKey.from_public_bytes(base64.b64decode(builder["public_key"]))
             public_key.verify(base64.b64decode(data.signature), canonical_json(payload).encode())
-        except (InvalidSignature, ValueError):
+        except (InvalidSignature, ValueError, binascii.Error):
             raise HTTPException(status_code=400, detail="Invalid builder signature") from None
 
         try:
@@ -415,9 +459,7 @@ def evaluate_release(release_id: str) -> dict:
         candidate_matches = consensus_hash == release["candidate_sha256"] if consensus_hash else False
         signatures_valid = bool(rows) and all(row["signature_valid"] for row in rows)
 
-        expected_builders = db.execute(
-            "SELECT COUNT(*) AS count FROM builders WHERE trusted = 1"
-        ).fetchone()["count"]
+        expected_builders = release["expected_builders"]
 
         if len(rows) < release["threshold"]:
             status = "pending"
@@ -473,7 +515,7 @@ def evaluate_release(release_id: str) -> dict:
                 "signature_valid": bool(row["signature_valid"]),
                 "built_at": row["built_at"],
                 "environment": row["environment"],
-                "attestation_schema": ATTESTATION_SCHEMA,
+                "attestation_schema": json.loads(row["payload_json"])["schema_version"],
                 "signing_key_fingerprint": hashlib.sha256(
                     base64.b64decode(row["public_key"])
                 ).hexdigest(),
@@ -518,6 +560,7 @@ def run_demo_verification(
             recipe_sha256=DEMO_RECIPE_SHA256,
             candidate_sha256=candidate,
             threshold=threshold,
+            expected_builders=3,
             reject_on_conflict=reject_on_conflict,
         )
     )
@@ -616,6 +659,84 @@ def get_system_stats() -> dict:
     }
 
 
+def register_builder(data: BuilderRegistrationRequest) -> dict:
+    try:
+        public_key_raw = base64.b64decode(data.public_key, validate=True)
+        if len(public_key_raw) != 32:
+            raise ValueError
+        Ed25519PublicKey.from_public_bytes(public_key_raw)
+    except (ValueError, binascii.Error):
+        raise HTTPException(status_code=422, detail="public_key must be a base64 Ed25519 public key") from None
+
+    with connect() as db:
+        existing = db.execute(
+            "SELECT public_key FROM builders WHERE id = ?", (data.id,)
+        ).fetchone()
+        if existing and existing["public_key"] != data.public_key:
+            raise HTTPException(
+                status_code=409,
+                detail="Builder id is already bound to a different signing key",
+            )
+        db.execute(
+            """
+            INSERT INTO builders (id, name, operator, platform, public_key, trusted, created_at)
+            VALUES (?, ?, ?, ?, ?, 1, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                name = excluded.name,
+                operator = excluded.operator,
+                platform = excluded.platform
+            """,
+            (data.id, data.name, data.operator, data.platform, data.public_key, utc_now()),
+        )
+    return next(builder for builder in list_builders() if builder["id"] == data.id)
+
+
+def list_builders() -> list[dict]:
+    with connect() as db:
+        rows = db.execute(
+            """
+            SELECT
+                b.*,
+                (SELECT a.artifact_sha256 FROM attestations a
+                 WHERE a.builder_id = b.id ORDER BY a.id DESC LIMIT 1) AS latest_artifact_sha256,
+                (SELECT a.built_at FROM attestations a
+                 WHERE a.builder_id = b.id ORDER BY a.id DESC LIMIT 1) AS latest_attestation_at,
+                (SELECT COUNT(*) FROM attestations a WHERE a.builder_id = b.id) AS total_builds,
+                (SELECT COUNT(*) FROM attestations a
+                 JOIN releases r ON r.id = a.release_id
+                 WHERE a.builder_id = b.id
+                   AND r.consensus_sha256 IS NOT NULL
+                   AND a.artifact_sha256 = r.consensus_sha256) AS matching_builds
+            FROM builders b
+            WHERE b.trusted = 1
+            ORDER BY b.created_at, b.id
+            """
+        ).fetchall()
+    builders = []
+    for row in rows:
+        total_builds = row["total_builds"]
+        builders.append(
+            {
+                "id": row["id"],
+                "name": row["name"],
+                "operator": row["operator"],
+                "platform": row["platform"],
+                "signing_key_fingerprint": hashlib.sha256(
+                    base64.b64decode(row["public_key"])
+                ).hexdigest(),
+                "trusted": bool(row["trusted"]),
+                "created_at": row["created_at"],
+                "latest_artifact_sha256": row["latest_artifact_sha256"],
+                "latest_attestation_at": row["latest_attestation_at"],
+                "total_builds": total_builds,
+                "agreement_rate": round(row["matching_builds"] * 100 / total_builds, 1)
+                if total_builds
+                else 0.0,
+            }
+        )
+    return builders
+
+
 def sign_demo_attestation(release_id: str, builder_id: str, artifact_hash: str, platform: str) -> AttestationCreate:
     with connect() as db:
         release = db.execute("SELECT * FROM releases WHERE id = ?", (release_id,)).fetchone()
@@ -664,6 +785,26 @@ def health_v1() -> dict:
 @app.get("/api/v1/stats", response_model=SystemStatsResponse)
 def system_stats_v1() -> dict:
     return get_system_stats()
+
+
+@app.get("/api/v1/builders", response_model=list[BuilderRegistryResponse])
+def builders_v1() -> list[dict]:
+    return list_builders()
+
+
+@app.post("/api/v1/builders", response_model=BuilderRegistryResponse, status_code=201)
+def register_builder_v1(data: BuilderRegistrationRequest) -> dict:
+    return register_builder(data)
+
+
+@app.post("/api/v1/releases", status_code=201)
+def register_release_v1(data: ReleaseCreate) -> dict:
+    return create_release(data)
+
+
+@app.post("/api/v1/releases/{release_id}/attestations", status_code=201)
+def register_attestation_v1(release_id: str, data: AttestationCreate) -> dict:
+    return submit_attestation(release_id, data)
 
 
 @app.post("/api/releases", status_code=201)

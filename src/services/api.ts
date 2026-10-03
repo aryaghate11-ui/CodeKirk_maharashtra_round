@@ -12,6 +12,7 @@ import {
 } from '../types';
 import {
   ApiConsumerArtifactResponse,
+  ApiBuilderRegistryResponse,
   ApiSystemStatsResponse,
   ApiVerificationResponse,
   ApiVerificationStatus,
@@ -316,7 +317,33 @@ class QuorumApiService {
     if (!this.isMockMode() || this.strictBackendMode) {
       try {
         const res = await fetch(`${API_BASE}/builders`);
-        if (res.ok) return await res.json();
+        if (res.ok) {
+          const data = await res.json() as ApiBuilderRegistryResponse[];
+          return data.map((builder) => ({
+            id: builder.id,
+            name: builder.name,
+            shortCode: builder.name
+              .split(/\s+/)
+              .map((word) => word[0])
+              .join('')
+              .slice(0, 2)
+              .toUpperCase(),
+            operator: builder.operator,
+            address: `ed25519:${builder.signing_key_fingerprint}`,
+            environment: builder.platform,
+            os: builder.platform,
+            runtime: 'quorum.attestation.v2',
+            region: builder.operator,
+            status: 'ONLINE',
+            uptime: 100,
+            latestAttestationTime: builder.latest_attestation_at || builder.created_at,
+            lastArtifactHash: builder.latest_artifact_sha256 || '0'.repeat(64),
+            signatureStatus: 'VALID',
+            totalBuilds: builder.total_builds,
+            agreementRate: builder.agreement_rate,
+            verifiedByContract: false,
+          }));
+        }
         throw new BackendError(`Status ${res.status}`, res.status, '/builders');
       } catch (e: any) {
         return this.handleFailure('/builders', e, () => [...MOCK_BUILDERS]);
