@@ -48,7 +48,7 @@ export const ActivityTimeline: React.FC<ActivityTimelineProps> = ({
           <div key={evt.id} className="relative group">
             {/* Dot marker */}
             <div
-              className={`absolute -left-6 top-1 w-5 h-5 rounded-full grid place-items-center border bg-brand-panel ${
+              className={`absolute -left-6 top-1 w-5 h-5 rounded-full grid place-items-center border bg-brand-panel/85 backdrop-blur-sm ${
                 isSuccess
                   ? 'border-quorum-green-border text-quorum-green'
                   : isConflict

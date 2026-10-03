@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { AuditEvent } from '../../types';
 import {
   CheckCircle2,
@@ -7,7 +7,9 @@ import {
   Send,
   Lock,
   ShieldCheck,
-  ExternalLink,
+  ChevronDown,
+  ChevronUp,
+  Hash,
 } from 'lucide-react';
 import { CopyButton } from '../common/CopyButton';
 import { truncateHash } from '../../lib/utils';
@@ -17,6 +19,8 @@ interface AuditTimelineFullProps {
 }
 
 export const AuditTimelineFull: React.FC<AuditTimelineFullProps> = ({ events }) => {
+  const [expandedEventId, setExpandedEventId] = useState<string | null>(null);
+
   const getEventIcon = (type: AuditEvent['type']) => {
     switch (type) {
       case 'AUDIT_SEALED':
@@ -34,18 +38,27 @@ export const AuditTimelineFull: React.FC<AuditTimelineFullProps> = ({ events }) 
     }
   };
 
+  if (events.length === 0) {
+    return (
+      <div className="p-8 text-center text-xs font-mono text-brand-muted">
+        No audit events recorded for this release yet.
+      </div>
+    );
+  }
+
   return (
-    <div className="relative pl-8 space-y-6 before:absolute before:left-3 before:top-3 before:bottom-3 before:w-[1px] before:bg-brand-border">
-      {events.map((evt) => {
+    <div className="relative pl-8 space-y-5 before:absolute before:left-3 before:top-3 before:bottom-3 before:w-[1px] before:bg-brand-border">
+      {events.map((evt, idx) => {
         const isConflict = evt.type === 'CONFLICT_DETECTED';
         const isSealed = evt.type === 'AUDIT_SEALED';
         const isFinal = evt.type === 'DECISION_FINALIZED';
+        const isExpanded = expandedEventId === evt.id;
 
         return (
-          <div key={evt.id} className="relative group">
+          <div key={evt.id || idx} className="relative group">
             {/* Event circular anchor */}
             <div
-              className={`absolute -left-8 top-1.5 w-6 h-6 rounded-full grid place-items-center border bg-brand-panel ${
+              className={`absolute -left-8 top-1.5 w-6 h-6 rounded-full grid place-items-center border bg-brand-panel/85 backdrop-blur-sm ${
                 isSealed || isFinal
                   ? 'border-quorum-green-border text-quorum-green shadow-glow-green'
                   : isConflict
@@ -58,12 +71,12 @@ export const AuditTimelineFull: React.FC<AuditTimelineFullProps> = ({ events }) 
 
             {/* Event Content Card */}
             <div
-              className={`p-4 rounded-xl border transition-all duration-150 ${
+              className={`p-4 rounded-xl border backdrop-blur-md transition-all duration-150 ${
                 isConflict
                   ? 'bg-quorum-amber-bg/25 border-quorum-amber-border/70'
-                  : isSealed
-                  ? 'bg-quorum-green-bg/25 border-quorum-green-border/70'
-                  : 'bg-brand-panel/60 border-brand-border hover:bg-brand-panel-elevated/40'
+                  : isSealed || isFinal
+                  ? 'bg-quorum-green-bg/20 border-quorum-green-border/70'
+                  : 'bg-brand-panel/70 border-brand-border hover:bg-brand-panel-elevated/50'
               }`}
             >
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 mb-1.5">
@@ -76,35 +89,39 @@ export const AuditTimelineFull: React.FC<AuditTimelineFullProps> = ({ events }) 
                   </span>
                 </div>
 
-                {evt.blockNumber && (
-                  <span className="font-mono text-[11px] text-brand-subtle flex items-center gap-1">
-                    Block #{evt.blockNumber}
-                  </span>
-                )}
+                <span className="font-mono text-[11px] text-brand-subtle">
+                  Step #{idx + 1}
+                </span>
               </div>
 
               <p className="text-xs text-brand-muted leading-relaxed">
                 {evt.description}
               </p>
 
-              {/* Hash / Transaction Footnotes if present */}
-              {(evt.txHash || evt.evidenceHash) && (
-                <div className="mt-3 pt-2.5 border-t border-brand-border/40 flex flex-wrap items-center gap-4 text-[11px] font-mono">
-                  {evt.txHash && (
-                    <div className="flex items-center gap-1 text-brand-muted">
-                      <span className="text-brand-subtle">Tx:</span>
-                      <span className="text-brand-text">{truncateHash(evt.txHash, 8, 6)}</span>
-                      <CopyButton text={evt.txHash} title="Copy transaction hash" />
-                    </div>
-                  )}
+              {/* Collapsible cryptographic details */}
+              {evt.evidenceHash && (
+                <div className="mt-3 pt-2.5 border-t border-brand-border/40">
+                  <button
+                    onClick={() => setExpandedEventId(isExpanded ? null : evt.id)}
+                    className="flex items-center gap-1.5 text-[11px] font-mono text-brand-muted hover:text-white transition-colors cursor-pointer"
+                  >
+                    <Hash className="w-3 h-3 text-brand-subtle" />
+                    <span>{isExpanded ? 'Hide Event Hash Details' : 'Show Event Hash Details'}</span>
+                    {isExpanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+                  </button>
 
-                  {evt.evidenceHash && (
-                    <div className="flex items-center gap-1 text-brand-muted">
-                      <span className="text-brand-subtle">Evidence Root:</span>
-                      <span className="text-quorum-green-light font-mono">
-                        {truncateHash(evt.evidenceHash, 8, 6)}
-                      </span>
-                      <CopyButton text={evt.evidenceHash} title="Copy evidence hash" />
+                  {isExpanded && (
+                    <div className="mt-2 p-2.5 rounded-lg bg-brand-bg-deep/65 backdrop-blur-sm border border-brand-border space-y-1 text-[11px] font-mono">
+                      <div className="flex items-center justify-between">
+                        <span className="text-brand-subtle">Event Hash:</span>
+                        <div className="flex items-center gap-1 text-quorum-green-light">
+                          <span>{truncateHash(evt.evidenceHash, 14, 10)}</span>
+                          <CopyButton text={evt.evidenceHash} title="Copy event hash" />
+                        </div>
+                      </div>
+                      <div className="text-[10px] text-brand-subtle pt-1">
+                        Sealed into local SQLite hash-chain ledger.
+                      </div>
                     </div>
                   )}
                 </div>

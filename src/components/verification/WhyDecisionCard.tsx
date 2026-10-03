@@ -25,7 +25,7 @@ export const WhyDecisionCard: React.FC<WhyDecisionCardProps> = ({ verification }
       />
       <CardBody className="space-y-4">
         {/* Core Narrative returned from Verifier */}
-        <div className="p-4 rounded-xl bg-brand-bg-deep/80 border border-brand-border text-sm text-brand-text leading-relaxed">
+        <div className="p-4 rounded-xl bg-brand-bg-deep/65 backdrop-blur-sm border border-brand-border/70 text-sm text-brand-text leading-relaxed">
           <p className="font-sans font-medium text-slate-200">
             "{explanation}"
           </p>
@@ -39,7 +39,7 @@ export const WhyDecisionCard: React.FC<WhyDecisionCardProps> = ({ verification }
 
           <div className="space-y-2 text-xs">
             {/* Rule 1: Signature Authenticity */}
-            <div className="flex items-center justify-between p-2.5 rounded-lg bg-brand-panel-elevated/40 border border-brand-border">
+            <div className="flex items-center justify-between p-2.5 rounded-lg bg-brand-panel-elevated/50 backdrop-blur-sm border border-brand-border/60">
               <div className="flex items-center gap-2">
                 {validSignatures ? (
                   <CheckCircle2 className="w-4 h-4 text-quorum-green flex-shrink-0" />
@@ -55,12 +55,12 @@ export const WhyDecisionCard: React.FC<WhyDecisionCardProps> = ({ verification }
                   validSignatures ? 'text-quorum-green-light' : 'text-quorum-red-light'
                 }`}
               >
-                {validSignatures ? 'PASS (secp256k1 valid)' : 'FAIL (untrusted)'}
+                {validSignatures ? 'PASS (Ed25519 valid)' : 'FAIL (untrusted)'}
               </span>
             </div>
 
             {/* Rule 2: Minimum Agreement Threshold */}
-            <div className="flex items-center justify-between p-2.5 rounded-lg bg-brand-panel-elevated/40 border border-brand-border">
+            <div className="flex items-center justify-between p-2.5 rounded-lg bg-brand-panel-elevated/50 backdrop-blur-sm border border-brand-border/60">
               <div className="flex items-center gap-2">
                 {consensusThresholdMet ? (
                   <CheckCircle2 className="w-4 h-4 text-quorum-green flex-shrink-0" />
@@ -81,7 +81,7 @@ export const WhyDecisionCard: React.FC<WhyDecisionCardProps> = ({ verification }
             </div>
 
             {/* Rule 3: Published Binary Parity */}
-            <div className="flex items-center justify-between p-2.5 rounded-lg bg-brand-panel-elevated/40 border border-brand-border">
+            <div className="flex items-center justify-between p-2.5 rounded-lg bg-brand-panel-elevated/50 backdrop-blur-sm border border-brand-border/60">
               <div className="flex items-center gap-2">
                 {publishedArtifactMatches ? (
                   <CheckCircle2 className="w-4 h-4 text-quorum-green flex-shrink-0" />
@@ -102,7 +102,7 @@ export const WhyDecisionCard: React.FC<WhyDecisionCardProps> = ({ verification }
             </div>
 
             {/* Rule 4: Isolated Conflict Tolerance */}
-            <div className="flex items-center justify-between p-2.5 rounded-lg bg-brand-panel-elevated/40 border border-brand-border">
+            <div className="flex items-center justify-between p-2.5 rounded-lg bg-brand-panel-elevated/50 backdrop-blur-sm border border-brand-border/60">
               <div className="flex items-center gap-2">
                 {!conflictDetected ? (
                   <CheckCircle2 className="w-4 h-4 text-quorum-green flex-shrink-0" />
@@ -124,10 +124,10 @@ export const WhyDecisionCard: React.FC<WhyDecisionCardProps> = ({ verification }
           </div>
         </div>
 
-        <div className="p-3 rounded-lg bg-brand-bg-deep/40 border border-brand-border/60 text-[11px] text-brand-muted flex items-start gap-2">
+        <div className="p-3 rounded-lg bg-brand-bg-deep/50 backdrop-blur-sm border border-brand-border/60 text-[11px] text-brand-muted flex items-start gap-2">
           <Shield className="w-4 h-4 text-brand-subtle flex-shrink-0 mt-0.5" />
           <span>
-            Computed by independent verification contract and SQLite state store. Frontend operates in read-only visualization mode.
+            Evaluated by Quorum's cryptographic consensus engine and SQLite audit log.
           </span>
         </div>
       </CardBody>

@@ -57,7 +57,7 @@ export const MetricCard: React.FC<MetricCardProps> = ({
           )}
         </div>
 
-        <div className="p-2.5 rounded-xl bg-brand-panel-elevated/70 border border-brand-border text-brand-muted group-hover:text-white transition-colors">
+        <div className="p-2.5 rounded-xl bg-brand-panel-elevated/60 backdrop-blur-sm border border-brand-border/70 text-brand-muted group-hover:text-white transition-colors">
           {icon}
         </div>
       </div>

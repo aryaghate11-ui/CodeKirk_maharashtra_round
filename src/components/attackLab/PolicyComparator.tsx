@@ -40,8 +40,8 @@ export const PolicyComparator: React.FC<PolicyComparatorProps> = ({
             onClick={() => onTogglePolicy('2-of-3')}
             className={`p-4 rounded-xl border cursor-pointer transition-all duration-200 relative ${
               activePolicy === '2-of-3'
-                ? 'bg-brand-panel-elevated border-quorum-green-border shadow-glow-green ring-1 ring-quorum-green/30'
-                : 'bg-brand-bg-deep/70 border-brand-border hover:border-brand-border-bright'
+                ? 'bg-brand-panel-elevated/80 backdrop-blur-md border-quorum-green-border shadow-glow-green ring-1 ring-quorum-green/30'
+                : 'bg-brand-bg-deep/65 backdrop-blur-sm border-brand-border hover:border-brand-border-bright'
             }`}
           >
             {activePolicy === '2-of-3' && (
@@ -82,10 +82,10 @@ export const PolicyComparator: React.FC<PolicyComparatorProps> = ({
 
               {/* Result Banner */}
               <div
-                className={`p-3 rounded-lg flex items-center justify-between text-xs font-semibold ${
+                className={`p-3 rounded-lg flex items-center justify-between text-xs font-semibold backdrop-blur-sm ${
                   decision2of3 === 'ACCEPTED'
-                    ? 'bg-quorum-green-bg text-quorum-green-light border border-quorum-green-border'
-                    : 'bg-quorum-red-bg text-quorum-red-light border border-quorum-red-border'
+                    ? 'bg-quorum-green-bg/80 text-quorum-green-light border border-quorum-green-border'
+                    : 'bg-quorum-red-bg/80 text-quorum-red-light border border-quorum-red-border'
                 }`}
               >
                 <div className="flex items-center gap-2">
@@ -108,8 +108,8 @@ export const PolicyComparator: React.FC<PolicyComparatorProps> = ({
             onClick={() => onTogglePolicy('3-of-3')}
             className={`p-4 rounded-xl border cursor-pointer transition-all duration-200 relative ${
               activePolicy === '3-of-3'
-                ? 'bg-brand-panel-elevated border-quorum-green-border shadow-glow-green ring-1 ring-quorum-green/30'
-                : 'bg-brand-bg-deep/70 border-brand-border hover:border-brand-border-bright'
+                ? 'bg-brand-panel-elevated/80 backdrop-blur-md border-quorum-green-border shadow-glow-green ring-1 ring-quorum-green/30'
+                : 'bg-brand-bg-deep/65 backdrop-blur-sm border-brand-border hover:border-brand-border-bright'
             }`}
           >
             {activePolicy === '3-of-3' && (
@@ -150,10 +150,10 @@ export const PolicyComparator: React.FC<PolicyComparatorProps> = ({
 
               {/* Result Banner */}
               <div
-                className={`p-3 rounded-lg flex items-center justify-between text-xs font-semibold ${
+                className={`p-3 rounded-lg flex items-center justify-between text-xs font-semibold backdrop-blur-sm ${
                   decision3of3 === 'ACCEPTED'
-                    ? 'bg-quorum-green-bg text-quorum-green-light border border-quorum-green-border'
-                    : 'bg-quorum-red-bg text-quorum-red-light border border-quorum-red-border'
+                    ? 'bg-quorum-green-bg/80 text-quorum-green-light border border-quorum-green-border'
+                    : 'bg-quorum-red-bg/80 text-quorum-red-light border border-quorum-red-border'
                 }`}
               >
                 <div className="flex items-center gap-2">
@@ -173,7 +173,7 @@ export const PolicyComparator: React.FC<PolicyComparatorProps> = ({
         </div>
 
         {/* Dynamic educational takeaway */}
-        <div className="p-3 rounded-lg bg-brand-panel-elevated/30 border border-brand-border text-xs text-brand-muted flex items-start gap-2">
+        <div className="p-3 rounded-lg bg-brand-panel-elevated/40 backdrop-blur-sm border border-brand-border text-xs text-brand-muted flex items-start gap-2">
           <ArrowRight className="w-4 h-4 text-quorum-green flex-shrink-0 mt-0.5" />
           <span>
             {scenarioId === 'conflict' ? (

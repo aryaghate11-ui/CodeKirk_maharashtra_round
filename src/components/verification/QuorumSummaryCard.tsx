@@ -36,7 +36,7 @@ export const QuorumSummaryCard: React.FC<QuorumSummaryCardProps> = ({ verificati
 
         <CardBody className="space-y-5">
           {/* Main Visual Agreement & Progress */}
-          <div className="flex items-center gap-4 p-4 rounded-xl bg-brand-bg-deep/70 border border-brand-border">
+          <div className="flex items-center gap-4 p-4 rounded-xl bg-brand-bg-deep/65 backdrop-blur-sm border border-brand-border/70">
             <ProgressRing
               current={agreement}
               total={totalBuilders}
@@ -74,7 +74,7 @@ export const QuorumSummaryCard: React.FC<QuorumSummaryCardProps> = ({ verificati
           {/* Metric Matrix */}
           <div className="grid grid-cols-2 gap-2.5">
             {/* Agreement Metric */}
-            <div className="p-3 rounded-lg bg-brand-panel-elevated/40 border border-brand-border space-y-1">
+            <div className="p-3 rounded-lg bg-brand-panel-elevated/50 backdrop-blur-sm border border-brand-border/60 space-y-1">
               <span className="text-[11px] text-brand-muted flex items-center gap-1.5">
                 <GitCompare className="w-3 h-3 text-brand-subtle" />
                 Agreement
@@ -85,7 +85,7 @@ export const QuorumSummaryCard: React.FC<QuorumSummaryCardProps> = ({ verificati
             </div>
 
             {/* Policy Metric */}
-            <div className="p-3 rounded-lg bg-brand-panel-elevated/40 border border-brand-border space-y-1">
+            <div className="p-3 rounded-lg bg-brand-panel-elevated/50 backdrop-blur-sm border border-brand-border/60 space-y-1">
               <span className="text-[11px] text-brand-muted flex items-center gap-1.5">
                 <Scale className="w-3 h-3 text-brand-subtle" />
                 Configured Policy
@@ -96,7 +96,7 @@ export const QuorumSummaryCard: React.FC<QuorumSummaryCardProps> = ({ verificati
             </div>
 
             {/* Signatures Metric */}
-            <div className="p-3 rounded-lg bg-brand-panel-elevated/40 border border-brand-border space-y-1">
+            <div className="p-3 rounded-lg bg-brand-panel-elevated/50 backdrop-blur-sm border border-brand-border/60 space-y-1">
               <span className="text-[11px] text-brand-muted flex items-center gap-1.5">
                 <KeyRound className="w-3 h-3 text-brand-subtle" />
                 Signatures
@@ -111,7 +111,7 @@ export const QuorumSummaryCard: React.FC<QuorumSummaryCardProps> = ({ verificati
             </div>
 
             {/* Conflict Metric */}
-            <div className="p-3 rounded-lg bg-brand-panel-elevated/40 border border-brand-border space-y-1">
+            <div className="p-3 rounded-lg bg-brand-panel-elevated/50 backdrop-blur-sm border border-brand-border/60 space-y-1">
               <span className="text-[11px] text-brand-muted flex items-center gap-1.5">
                 <AlertTriangle className="w-3 h-3 text-brand-subtle" />
                 Conflict Status
@@ -138,7 +138,7 @@ export const QuorumSummaryCard: React.FC<QuorumSummaryCardProps> = ({ verificati
 
       {/* Final Decision Banner at bottom of card */}
       <div
-        className={`p-4 border-t flex items-center justify-between ${
+        className={`p-4 border-t backdrop-blur-sm flex items-center justify-between ${
           decision === 'ACCEPTED'
             ? 'bg-quorum-green-bg/60 border-quorum-green-border text-quorum-green-light'
             : decision === 'REJECTED'
@@ -165,7 +165,7 @@ export const QuorumSummaryCard: React.FC<QuorumSummaryCardProps> = ({ verificati
         </div>
 
         <span className="text-[11px] font-mono opacity-80">
-          Anchored in Block #{verification.blockNumber || '5829104'}
+          Anchored in Local Hash-Linked Audit Log
         </span>
       </div>
     </Card>

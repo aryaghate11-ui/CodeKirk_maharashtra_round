@@ -66,7 +66,12 @@ export const App: React.FC = () => {
 
       {currentPage === 'builders' && <BuildersPage />}
 
-      {currentPage === 'attack-lab' && <AttackLabPage />}
+      {currentPage === 'attack-lab' && (
+        <AttackLabPage
+          onNavigate={setCurrentPage}
+          onSelectRelease={handleSelectRelease}
+        />
+      )}
 
       {currentPage === 'audit' && <AuditHistoryPage />}
     </AppShell>

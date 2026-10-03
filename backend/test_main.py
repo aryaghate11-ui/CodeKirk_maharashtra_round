@@ -46,6 +46,24 @@ class QuorumDecisionTests(unittest.TestCase):
         for previous, current in zip(events, events[1:]):
             self.assertEqual(current["previous_hash"], previous["event_hash"])
 
+    def test_read_endpoints(self):
+        self.run_scenario("valid")
+        releases = main.list_releases()
+        self.assertGreaterEqual(len(releases), 1)
+        self.assertEqual(releases[0]["status"], "verified")
+
+        builders = main.list_builders()
+        self.assertEqual(len(builders), 3)
+        self.assertTrue(all(b["trusted"] == 1 for b in builders))
+
+        stats = main.system_stats()
+        self.assertGreaterEqual(stats["releasesVerified"], 1)
+        self.assertEqual(stats["activeBuilders"], 3)
+
+        rel_id = releases[0]["release_id"]
+        audit_events = main.release_audit_events(rel_id)
+        self.assertGreaterEqual(len(audit_events), 5)
+
 
 if __name__ == "__main__":
     unittest.main()

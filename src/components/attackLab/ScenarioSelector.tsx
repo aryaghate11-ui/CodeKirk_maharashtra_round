@@ -36,18 +36,18 @@ export const ScenarioSelector: React.FC<ScenarioSelectorProps> = ({
           <button
             key={sc.id}
             onClick={() => onSelectScenario(sc.id)}
-            className={`p-3.5 rounded-xl border text-left transition-all duration-200 flex flex-col justify-between ${
+            className={`p-3.5 rounded-xl border backdrop-blur-md text-left transition-all duration-200 flex flex-col justify-between ${
               isSelected
-                ? 'bg-brand-panel-elevated border-brand-border-bright ring-1 ring-quorum-green/30 shadow-panel'
-                : 'bg-brand-panel/60 border-brand-border hover:bg-brand-panel-elevated/40 hover:border-brand-border-bright'
+                ? 'bg-brand-panel-elevated/80 border-brand-border-bright ring-1 ring-quorum-green/30 shadow-panel'
+                : 'bg-brand-panel/75 border-brand-border hover:bg-brand-panel-elevated/50 hover:border-brand-border-bright'
             }`}
           >
             <div className="space-y-2">
               <div className="flex items-center justify-between">
-                <div className="p-1.5 rounded-lg bg-brand-bg-deep border border-brand-border">
+                <div className="p-1.5 rounded-lg bg-brand-bg-deep/70 backdrop-blur-sm border border-brand-border">
                   {scenarioIcons[sc.id]}
                 </div>
-                <span className="text-[10px] font-mono font-semibold px-1.5 py-0.5 rounded bg-brand-bg-deep border border-brand-border text-brand-muted">
+                <span className="text-[10px] font-mono font-semibold px-1.5 py-0.5 rounded bg-brand-bg-deep/70 backdrop-blur-sm border border-brand-border text-brand-muted">
                   {sc.badge}
                 </span>
               </div>
@@ -67,7 +67,11 @@ export const ScenarioSelector: React.FC<ScenarioSelectorProps> = ({
             </div>
 
             <div className="mt-3 pt-2 border-t border-brand-border/40 text-[10px] font-mono text-brand-subtle flex items-center justify-between">
-              <span>Threat Sim</span>
+              {['valid', 'conflict', 'tampered'].includes(sc.id) ? (
+                <span className="text-quorum-green-light">FastAPI Backend</span>
+              ) : (
+                <span className="text-brand-muted">Simulated Demo</span>
+              )}
               <span className={isSelected ? 'text-quorum-green-light font-semibold' : ''}>
                 {isSelected ? 'ACTIVE' : 'SELECT'}
               </span>
