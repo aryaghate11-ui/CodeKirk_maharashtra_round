@@ -27,6 +27,7 @@ DEMO_SOURCE_COMMIT = "e64ec7a3ad1ef8bc828fe61e1fb324cc2e74c604"
 DEMO_RECIPE_SHA256 = "6cb431a152226cff3072c02dd2f6f6b187751d15452265b1b9e4cc2b3014ad10"
 GOOD_ARTIFACT_SHA256 = "73bc91e478f14385f0a8fcd3388af75e0d7e0558fd9e343f59025a048cb5a20f"
 BAD_ARTIFACT_SHA256 = "badd09f10e8f9315c7c9e649a535311185f922c154a2ca58048c2ba5d42277c2"
+ATTESTATION_SCHEMA = "quorum.attestation.v1"
 
 
 def utc_now() -> str:
@@ -63,6 +64,7 @@ def init_db() -> None:
                 id TEXT PRIMARY KEY,
                 repository_url TEXT NOT NULL,
                 source_commit TEXT NOT NULL,
+                artifact_name TEXT NOT NULL DEFAULT 'release-artifact',
                 recipe_sha256 TEXT NOT NULL,
                 candidate_sha256 TEXT NOT NULL,
                 threshold INTEGER NOT NULL DEFAULT 2,
@@ -103,6 +105,13 @@ def init_db() -> None:
             ON audit_events(release_id, id);
             """
         )
+        release_columns = {
+            row["name"] for row in db.execute("PRAGMA table_info(releases)").fetchall()
+        }
+        if "artifact_name" not in release_columns:
+            db.execute(
+                "ALTER TABLE releases ADD COLUMN artifact_name TEXT NOT NULL DEFAULT 'release-artifact'"
+            )
         db.execute("PRAGMA optimize")
     seed_demo_builders()
 
@@ -161,6 +170,7 @@ def append_audit_event(db: sqlite3.Connection, release_id: str, event_type: str,
 class ReleaseCreate(BaseModel):
     repository_url: HttpUrl
     source_commit: str = Field(pattern=r"^[0-9a-f]{40}$")
+    artifact_name: str = Field(default="release-artifact", min_length=1, max_length=200)
     recipe_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     candidate_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     threshold: int = Field(default=2, ge=1, le=20)
@@ -185,14 +195,15 @@ def create_release(data: ReleaseCreate) -> dict:
         db.execute(
             """
             INSERT INTO releases
-                (id, repository_url, source_commit, recipe_sha256, candidate_sha256,
+                (id, repository_url, source_commit, artifact_name, recipe_sha256, candidate_sha256,
                  threshold, reject_on_conflict, status, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
             """,
             (
                 release_id,
                 str(data.repository_url),
                 data.source_commit,
+                data.artifact_name,
                 data.recipe_sha256,
                 data.candidate_sha256,
                 data.threshold,
@@ -204,17 +215,26 @@ def create_release(data: ReleaseCreate) -> dict:
             db,
             release_id,
             "release.registered",
-            {"repository_url": str(data.repository_url), "source_commit": data.source_commit},
+            {
+                "repository_url": str(data.repository_url),
+                "source_commit": data.source_commit,
+                "artifact_name": data.artifact_name,
+                "recipe_sha256": data.recipe_sha256,
+            },
         )
     return {"id": release_id, "status": "pending", "audit_chain_head": chain_head}
 
 
 def attestation_payload(release: sqlite3.Row, data: AttestationCreate) -> dict:
     return {
+        "schema_version": ATTESTATION_SCHEMA,
+        "repository_url": release["repository_url"],
         "artifact_sha256": data.artifact_sha256,
+        "artifact_name": release["artifact_name"],
         "builder_id": data.builder_id,
         "built_at": data.built_at,
         "environment": data.environment,
+        "environment_sha256": hashlib.sha256(data.environment.encode()).hexdigest(),
         "recipe_sha256": release["recipe_sha256"],
         "release_id": release["id"],
         "source_commit": release["source_commit"],
@@ -275,7 +295,7 @@ def evaluate_release(release_id: str) -> dict:
             raise HTTPException(status_code=404, detail="Release not found")
         rows = db.execute(
             """
-            SELECT a.*, b.name, b.operator, b.platform
+            SELECT a.*, b.name, b.operator, b.platform, b.public_key
             FROM attestations a
             JOIN builders b ON b.id = a.builder_id
             WHERE a.release_id = ? AND a.signature_valid = 1 AND b.trusted = 1
@@ -290,6 +310,7 @@ def evaluate_release(release_id: str) -> dict:
         distinct_operators = len({row["operator"] for row in consensus_rows})
         has_conflict = len(counts) > 1
         candidate_matches = consensus_hash == release["candidate_sha256"] if consensus_hash else False
+        signatures_valid = bool(rows) and all(row["signature_valid"] for row in rows)
 
         if len(rows) < release["threshold"]:
             status = "pending"
@@ -327,6 +348,7 @@ def evaluate_release(release_id: str) -> dict:
         "attestation_count": len(rows),
         "threshold": release["threshold"],
         "rules": {
+            "signatures": signatures_valid,
             "matches": matching >= release["threshold"],
             "operators": distinct_operators >= release["threshold"],
             "candidate": candidate_matches,
@@ -340,6 +362,17 @@ def evaluate_release(release_id: str) -> dict:
                 "platform": row["platform"],
                 "artifact_sha256": row["artifact_sha256"],
                 "signature_valid": bool(row["signature_valid"]),
+                "built_at": row["built_at"],
+                "environment": row["environment"],
+                "attestation_schema": ATTESTATION_SCHEMA,
+                "signing_key_fingerprint": hashlib.sha256(
+                    base64.b64decode(row["public_key"])
+                ).hexdigest(),
+                "signature": row["signature"],
+                "signed_payload": json.loads(row["payload_json"]),
+                "evidence_digest": hashlib.sha256(
+                    f'{row["payload_json"]}|{row["signature"]}'.encode()
+                ).hexdigest(),
             }
             for row in rows
         ],
@@ -417,6 +450,7 @@ def demo_verify(data: DemoRequest) -> dict:
         ReleaseCreate(
             repository_url="https://github.com/rakyll/hey",
             source_commit=DEMO_SOURCE_COMMIT,
+            artifact_name="hey-linux-amd64",
             recipe_sha256=DEMO_RECIPE_SHA256,
             candidate_sha256=candidate,
             threshold=2,

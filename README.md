@@ -19,6 +19,7 @@ The SQLite database is created at `backend/data/quorum.db` and is intentionally 
 - FastAPI verification API
 - SQLite release, builder, attestation and audit records
 - Ed25519 builder-signature verification
+- Expandable signed evidence with key, recipe and evidence fingerprints
 - Configurable two-of-three quorum policy
 - Hash-chained audit events
 - Valid, tampered and builder-conflict demonstrations

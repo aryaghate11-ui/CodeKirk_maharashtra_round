@@ -104,6 +104,12 @@
     .builder-result { text-align: right; }
     .builder-hash { display: block; font-family: var(--mono); font-size: .72rem; color: var(--green); }
     .builder-state { display: block; color: var(--muted); font-size: .68rem; margin-top: 3px; }
+    .builder-evidence { grid-column: 1 / -1; border-top: 1px solid var(--line); padding-top: 9px; }
+    .builder-evidence summary { color: var(--blue); cursor: pointer; font-size: .72rem; list-style-position: inside; }
+    .evidence-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 14px; margin-top: 10px; padding: 10px; border-radius: 8px; background: #090d13; }
+    .evidence-item { min-width: 0; }
+    .evidence-item.wide { grid-column: 1 / -1; }
+    .evidence-value { display: block; color: var(--text); font-family: var(--mono); font-size: .67rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .spinner { width: 16px; height: 16px; border: 2px solid #334038; border-top-color: var(--green); border-radius: 50%; animation: spin .75s linear infinite; margin-left: auto; }
     @keyframes spin { to { transform: rotate(360deg); } }
 
@@ -161,6 +167,8 @@
       .right-stack { grid-template-columns: 1fr; }
       .builder { grid-template-columns: 36px minmax(0, 1fr); }
       .builder-result { grid-column: 2; text-align: left; }
+      .evidence-grid { grid-template-columns: 1fr; }
+      .evidence-item.wide { grid-column: auto; }
       .card-body, .card-head { padding-left: 15px; padding-right: 15px; }
     }
   </style>
@@ -223,16 +231,19 @@
                 <div class="builder-icon">GH</div>
                 <div><div class="builder-name">Northstar CI</div><div class="builder-env">GitHub Actions · Ubuntu 24.04</div></div>
                 <div class="builder-result"><span class="builder-state">Ready</span></div>
+                <details class="builder-evidence" hidden><summary>View signed evidence</summary><div class="evidence-grid"><div class="evidence-item"><span class="label">Evidence format</span><span class="evidence-value" data-evidence="schema"></span></div><div class="evidence-item"><span class="label">Signed at</span><span class="evidence-value" data-evidence="builtAt"></span></div><div class="evidence-item wide"><span class="label">Signing key fingerprint</span><span class="evidence-value" data-evidence="key"></span></div><div class="evidence-item wide"><span class="label">Build recipe fingerprint</span><span class="evidence-value" data-evidence="recipe"></span></div><div class="evidence-item wide"><span class="label">Evidence digest</span><span class="evidence-value" data-evidence="digest"></span></div></div></details>
               </div>
               <div class="builder" data-builder="1">
                 <div class="builder-icon">PX</div>
                 <div><div class="builder-name">Parallax Labs</div><div class="builder-env">Podman · Debian 13</div></div>
                 <div class="builder-result"><span class="builder-state">Ready</span></div>
+                <details class="builder-evidence" hidden><summary>View signed evidence</summary><div class="evidence-grid"><div class="evidence-item"><span class="label">Evidence format</span><span class="evidence-value" data-evidence="schema"></span></div><div class="evidence-item"><span class="label">Signed at</span><span class="evidence-value" data-evidence="builtAt"></span></div><div class="evidence-item wide"><span class="label">Signing key fingerprint</span><span class="evidence-value" data-evidence="key"></span></div><div class="evidence-item wide"><span class="label">Build recipe fingerprint</span><span class="evidence-value" data-evidence="recipe"></span></div><div class="evidence-item wide"><span class="label">Evidence digest</span><span class="evidence-value" data-evidence="digest"></span></div></div></details>
               </div>
               <div class="builder" data-builder="2">
                 <div class="builder-icon">LC</div>
                 <div><div class="builder-name">Local Witness</div><div class="builder-env">Self-hosted · Fedora 43</div></div>
                 <div class="builder-result"><span class="builder-state">Ready</span></div>
+                <details class="builder-evidence" hidden><summary>View signed evidence</summary><div class="evidence-grid"><div class="evidence-item"><span class="label">Evidence format</span><span class="evidence-value" data-evidence="schema"></span></div><div class="evidence-item"><span class="label">Signed at</span><span class="evidence-value" data-evidence="builtAt"></span></div><div class="evidence-item wide"><span class="label">Signing key fingerprint</span><span class="evidence-value" data-evidence="key"></span></div><div class="evidence-item wide"><span class="label">Build recipe fingerprint</span><span class="evidence-value" data-evidence="recipe"></span></div><div class="evidence-item wide"><span class="label">Evidence digest</span><span class="evidence-value" data-evidence="digest"></span></div></div></details>
               </div>
             </div>
           </article>
@@ -254,6 +265,7 @@
                 <div><strong>Independent majority</strong><p>At least two distinct operators must reproduce the same artifact.</p></div>
               </div>
               <div class="rules">
+                <div class="rule"><span class="check" data-rule="signatures">·</span>Every builder signature is valid</div>
                 <div class="rule"><span class="check" data-rule="matches">·</span>Two matching artifact fingerprints</div>
                 <div class="rule"><span class="check" data-rule="operators">·</span>Two independent operators</div>
                 <div class="rule"><span class="check" data-rule="candidate">·</span>Released file matches consensus</div>
@@ -285,6 +297,7 @@
     const runButton = document.querySelector('#runButton');
     const buildCount = document.querySelector('#buildCount');
     const builderEls = [...document.querySelectorAll('.builder')];
+    const evidenceEls = [...document.querySelectorAll('.builder-evidence')];
     const decision = document.querySelector('#decision');
     const decisionTitle = document.querySelector('#decisionTitle');
     const decisionText = document.querySelector('#decisionText');
@@ -296,6 +309,13 @@
 
     const goodHash = '73bc91e4…a20f';
     const badHash = 'badd09f1…77c2';
+    const hostedEvidence = Array.from({ length: 3 }, () => ({
+      schema: 'quorum.attestation.v1',
+      builtAt: 'Generated by local API',
+      key: 'Connect the local API to inspect the signing key',
+      recipe: '6cb431a1…ad10',
+      digest: 'Connect the local API to replay this evidence'
+    }));
     const scenarios = {
       valid: {
         hint: 'The released file matches all independently reproduced builds.',
@@ -303,7 +323,8 @@
         title: 'Release verified',
         text: '3 independent builders reproduced the published artifact. This release satisfies the strict quorum policy.',
         tone: 'green',
-        rules: { matches: true, operators: true, candidate: true, conflicts: true },
+        rules: { signatures: true, matches: true, operators: true, candidate: true, conflicts: true },
+        evidence: hostedEvidence,
         chain: 'chain: c438ba…91e7'
       },
       tampered: {
@@ -312,7 +333,8 @@
         title: 'Release rejected',
         text: 'The published artifact does not match the version reproduced from source. Do not install this file.',
         tone: 'red',
-        rules: { matches: true, operators: true, candidate: false, conflicts: true },
+        rules: { signatures: true, matches: true, operators: true, candidate: false, conflicts: true },
+        evidence: hostedEvidence,
         chain: 'chain: 712fea…0c44'
       },
       conflict: {
@@ -321,7 +343,8 @@
         title: 'Builder disagreement',
         text: 'Two builders agree, but one trusted builder reported a conflicting artifact. Manual investigation is required.',
         tone: 'amber',
-        rules: { matches: true, operators: true, candidate: true, conflicts: false },
+        rules: { signatures: true, matches: true, operators: true, candidate: true, conflicts: false },
+        evidence: hostedEvidence,
         chain: 'chain: e8290d…18af'
       }
     };
@@ -343,6 +366,7 @@
         el.classList.remove('active');
         el.querySelector('.builder-result').innerHTML = '<span class="builder-state">Ready</span>';
       });
+      evidenceEls.forEach(el => { el.hidden = true; el.open = false; });
       decision.className = 'decision waiting';
       decisionTitle.textContent = 'Awaiting verification';
       decisionText.textContent = 'Run the independent builders to determine whether this release satisfies the quorum policy.';
@@ -408,6 +432,13 @@
         text: presentation.text,
         tone: presentation.tone,
         rules: backendResult.rules,
+        evidence: backendResult.builders.map(builder => ({
+          schema: builder.attestation_schema,
+          builtAt: builder.built_at,
+          key: builder.signing_key_fingerprint,
+          recipe: builder.signed_payload.recipe_sha256,
+          digest: builder.evidence_digest
+        })),
         chain: `chain: ${shortHash(backendResult.audit_chain_head)}`
       } : fallback;
       resetResults();
@@ -428,6 +459,11 @@
         const mismatch = data.builderHashes[i] === badHash;
         const signatureState = backendResult ? 'Ed25519 signature valid' : 'Demo signature valid';
         el.querySelector('.builder-result').innerHTML = `<span class="builder-hash" style="${mismatch ? 'color:var(--red)' : ''}">${data.builderHashes[i]}</span><span class="builder-state">${signatureState}</span>`;
+        const evidence = evidenceEls[i];
+        Object.entries(data.evidence[i]).forEach(([field, value]) => {
+          evidence.querySelector(`[data-evidence="${field}"]`).textContent = value;
+        });
+        evidence.hidden = false;
         buildCount.textContent = `${i + 1} / 3 complete`;
       }
 
