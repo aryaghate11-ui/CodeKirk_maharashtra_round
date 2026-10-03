@@ -1,0 +1,402 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Quorum — Release Verification</title>
+  <meta name="description" content="Independent builders verify that released software matches its claimed source code.">
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='15' fill='%230b0e14'/%3E%3Cpath d='M17 20 32 12l15 8v15c0 10-6 16-15 20-9-4-15-10-15-20V20Z' fill='none' stroke='%236ee7b7' stroke-width='5'/%3E%3Cpath d='m24 33 6 6 11-13' fill='none' stroke='%23fff' stroke-width='5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+  <style>
+    :root {
+      --bg: #080b10;
+      --panel: #10151d;
+      --panel-2: #151b25;
+      --line: #26303d;
+      --line-bright: #374354;
+      --text: #f5f7fa;
+      --muted: #94a0af;
+      --green: #60e6ae;
+      --green-bg: #0d2c23;
+      --red: #ff7272;
+      --red-bg: #351719;
+      --amber: #f6c660;
+      --amber-bg: #34280f;
+      --blue: #80aaff;
+      --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      --sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    html { color-scheme: dark; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--text);
+      background:
+        radial-gradient(circle at 82% -10%, rgba(96, 230, 174, .12), transparent 30rem),
+        radial-gradient(circle at -8% 105%, rgba(128, 170, 255, .08), transparent 28rem),
+        var(--bg);
+      font-family: var(--sans);
+      font-size: 16px;
+      line-height: 1.5;
+    }
+
+    button, select { font: inherit; }
+    button { cursor: pointer; }
+    .shell { min-height: 100vh; display: grid; grid-template-columns: 246px minmax(0, 1fr); }
+
+    aside {
+      border-right: 1px solid var(--line);
+      padding: 26px 18px;
+      display: flex;
+      flex-direction: column;
+      background: rgba(8, 11, 16, .72);
+      backdrop-filter: blur(18px);
+    }
+
+    .brand { display: flex; align-items: center; gap: 11px; padding: 0 8px 28px; font-weight: 760; letter-spacing: -.02em; }
+    .logo { width: 31px; height: 31px; display: grid; place-items: center; border: 1px solid #2f5e50; border-radius: 9px; background: #10251f; color: var(--green); }
+    .logo svg { width: 18px; height: 18px; }
+    nav { display: grid; gap: 6px; }
+    .nav-item { display: flex; gap: 11px; align-items: center; min-height: 42px; padding: 0 12px; border-radius: 9px; color: var(--muted); font-size: .9rem; }
+    .nav-item.active { color: var(--text); background: var(--panel-2); border: 1px solid var(--line); }
+    .nav-item svg { width: 17px; height: 17px; }
+    .side-note { margin-top: auto; padding: 15px; border: 1px solid var(--line); border-radius: 12px; color: var(--muted); font-size: .79rem; background: rgba(16, 21, 29, .8); }
+    .side-note strong { display: block; color: var(--green); font-size: .72rem; letter-spacing: .08em; text-transform: uppercase; margin-bottom: 6px; }
+
+    main { min-width: 0; padding: 28px 34px 56px; }
+    .topbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 25px; }
+    h1 { margin: 0; font-size: clamp(1.45rem, 3vw, 2rem); letter-spacing: -.045em; line-height: 1.1; }
+    .subtitle { margin: 7px 0 0; color: var(--muted); font-size: .92rem; }
+    .network { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: .8rem; border: 1px solid var(--line); border-radius: 999px; padding: 7px 11px; background: var(--panel); white-space: nowrap; }
+    .pulse { width: 7px; height: 7px; border-radius: 50%; background: var(--green); box-shadow: 0 0 0 4px rgba(96,230,174,.11); }
+
+    .workspace { display: grid; grid-template-columns: minmax(0, 1.32fr) minmax(310px, .68fr); gap: 18px; align-items: start; }
+    .card { border: 1px solid var(--line); border-radius: 15px; background: linear-gradient(145deg, rgba(20,26,36,.96), rgba(13,17,24,.96)); box-shadow: 0 18px 45px rgba(0,0,0,.16); overflow: hidden; }
+    .card-head { padding: 19px 20px 15px; border-bottom: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .card-head h2 { margin: 0; font-size: .95rem; letter-spacing: -.01em; }
+    .step { color: var(--muted); font-family: var(--mono); font-size: .72rem; }
+    .card-body { padding: 20px; }
+
+    .release-meta { display: grid; grid-template-columns: 1fr 1fr; gap: 13px; }
+    .field { border: 1px solid var(--line); background: #0c1118; border-radius: 10px; padding: 12px 13px; min-width: 0; }
+    .field.wide { grid-column: 1 / -1; }
+    .label { display: block; color: var(--muted); font-size: .72rem; margin-bottom: 5px; }
+    .value { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .88rem; }
+    .mono { font-family: var(--mono); }
+    .source-link { color: var(--blue); }
+
+    .scenario-wrap { margin-top: 15px; display: grid; gap: 8px; }
+    .scenario-wrap label { color: var(--muted); font-size: .78rem; }
+    select { width: 100%; height: 44px; padding: 0 38px 0 12px; border: 1px solid var(--line-bright); color: var(--text); border-radius: 9px; background: #0c1118; }
+    .hint { color: var(--muted); font-size: .76rem; margin: 0; }
+
+    .run-btn { width: 100%; min-height: 48px; margin-top: 17px; border: 0; border-radius: 10px; background: var(--green); color: #062118; font-weight: 760; box-shadow: 0 8px 24px rgba(96,230,174,.13); transition: transform .15s, filter .15s; }
+    .run-btn:hover { filter: brightness(1.05); transform: translateY(-1px); }
+    .run-btn:disabled { cursor: wait; filter: saturate(.45); transform: none; }
+
+    .builder-list { display: grid; gap: 9px; }
+    .builder { min-height: 68px; display: grid; grid-template-columns: 36px minmax(0, 1fr) auto; align-items: center; gap: 11px; border: 1px solid var(--line); background: #0c1118; border-radius: 11px; padding: 10px 12px; transition: border-color .2s, background .2s; }
+    .builder.active { border-color: #3c5f57; background: #0e1918; }
+    .builder-icon { width: 36px; height: 36px; display: grid; place-items: center; border-radius: 9px; border: 1px solid var(--line); color: var(--muted); background: var(--panel-2); font-family: var(--mono); font-size: .78rem; }
+    .builder-name { font-weight: 650; font-size: .85rem; }
+    .builder-env { color: var(--muted); font-size: .7rem; margin-top: 2px; }
+    .builder-result { text-align: right; }
+    .builder-hash { display: block; font-family: var(--mono); font-size: .72rem; color: var(--green); }
+    .builder-state { display: block; color: var(--muted); font-size: .68rem; margin-top: 3px; }
+    .spinner { width: 16px; height: 16px; border: 2px solid #334038; border-top-color: var(--green); border-radius: 50%; animation: spin .75s linear infinite; margin-left: auto; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .result-card { margin-top: 18px; border-color: #2e4a41; }
+    .decision { min-height: 124px; padding: 22px; display: flex; align-items: flex-start; gap: 15px; }
+    .decision-mark { flex: 0 0 auto; width: 43px; height: 43px; display: grid; place-items: center; border-radius: 50%; background: var(--green-bg); color: var(--green); border: 1px solid #245d49; }
+    .decision-mark svg { width: 22px; height: 22px; }
+    .decision h2 { margin: 0; font-size: 1.35rem; letter-spacing: -.035em; }
+    .decision p { margin: 7px 0 0; color: var(--muted); font-size: .88rem; max-width: 65ch; }
+    .decision.red .decision-mark { background: var(--red-bg); color: var(--red); border-color: #773338; }
+    .decision.amber .decision-mark { background: var(--amber-bg); color: var(--amber); border-color: #6f571e; }
+    .decision.waiting .decision-mark { background: #17202b; color: var(--muted); border-color: var(--line-bright); }
+    .decision.red h2 { color: var(--red); }
+    .decision.amber h2 { color: var(--amber); }
+    .decision:not(.red):not(.amber):not(.waiting) h2 { color: var(--green); }
+
+    .right-stack { display: grid; gap: 18px; }
+    .policy-score { display: flex; align-items: center; gap: 15px; margin-bottom: 18px; }
+    .score-ring { width: 69px; height: 69px; display: grid; place-items: center; border-radius: 50%; background: conic-gradient(var(--green) 0 75%, #26313d 75%); position: relative; }
+    .score-ring::after { content: ""; position: absolute; inset: 6px; background: var(--panel); border-radius: 50%; }
+    .score-ring span { z-index: 1; font-family: var(--mono); font-size: .82rem; }
+    .policy-score strong { display: block; font-size: .95rem; }
+    .policy-score p { margin: 4px 0 0; color: var(--muted); font-size: .76rem; }
+    .rules { display: grid; gap: 9px; }
+    .rule { display: flex; align-items: center; gap: 9px; color: var(--muted); font-size: .8rem; }
+    .check { width: 19px; height: 19px; flex: 0 0 auto; display: grid; place-items: center; border-radius: 50%; border: 1px solid var(--line-bright); color: var(--muted); font-size: .68rem; }
+    .check.pass { border-color: #2f725b; color: var(--green); background: var(--green-bg); }
+    .check.fail { border-color: #78353a; color: var(--red); background: var(--red-bg); }
+
+    .timeline { display: grid; gap: 0; }
+    .event { position: relative; padding: 0 0 18px 24px; color: var(--muted); font-size: .76rem; }
+    .event:last-child { padding-bottom: 0; }
+    .event::before { content: ""; position: absolute; left: 6px; top: 5px; bottom: -5px; width: 1px; background: var(--line); }
+    .event:last-child::before { display: none; }
+    .event::after { content: ""; position: absolute; left: 2px; top: 4px; width: 7px; height: 7px; border-radius: 50%; background: var(--line-bright); border: 2px solid var(--panel); }
+    .event.done::after { background: var(--green); }
+    .event strong { color: var(--text); display: block; font-size: .79rem; margin-bottom: 2px; }
+    .audit-hash { margin-top: 14px; padding: 9px 10px; border-radius: 8px; background: #0c1118; border: 1px solid var(--line); color: var(--muted); font-family: var(--mono); font-size: .67rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+    .demo-badge { display: inline-flex; align-items: center; gap: 6px; color: var(--amber); font-size: .7rem; padding: 4px 8px; border: 1px solid #5f4b1e; background: #211a0b; border-radius: 999px; }
+
+    @media (max-width: 970px) {
+      .shell { grid-template-columns: 1fr; }
+      aside { display: none; }
+      main { padding: 22px 18px 42px; }
+      .workspace { grid-template-columns: 1fr; }
+      .right-stack { grid-template-columns: 1fr 1fr; }
+    }
+
+    @media (max-width: 620px) {
+      .topbar { align-items: flex-start; }
+      .network { display: none; }
+      .release-meta { grid-template-columns: 1fr; }
+      .field.wide { grid-column: auto; }
+      .right-stack { grid-template-columns: 1fr; }
+      .builder { grid-template-columns: 36px minmax(0, 1fr); }
+      .builder-result { grid-column: 2; text-align: left; }
+      .card-body, .card-head { padding-left: 15px; padding-right: 15px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <aside>
+      <div class="brand">
+        <span class="logo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3 20 7v6c0 5-3.3 7.7-8 9-4.7-1.3-8-4-8-9V7l8-4Z"/><path d="m8.5 12 2.2 2.2 4.8-5"/></svg></span>
+        Quorum
+      </div>
+      <nav aria-label="Main navigation">
+        <div class="nav-item active"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>Verification</div>
+        <div class="nav-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19V9m6 10V5m6 14v-7m4 7H2"/></svg>Releases</div>
+        <div class="nav-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="8" cy="8" r="3"/><circle cx="17" cy="17" r="3"/><path d="m10.5 9.5 4 5M17 3v5h-5M8 21v-5h5"/></svg>Builders</div>
+        <div class="nav-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 5h16v14H4z"/><path d="M8 9h8M8 13h5"/></svg>Audit log</div>
+      </nav>
+      <div class="side-note"><strong>How it works</strong>Independent builders recreate the software. Matching fingerprints prove the released file came from the claimed source.</div>
+    </aside>
+
+    <main>
+      <header class="topbar">
+        <div>
+          <h1>Verify a software release</h1>
+          <p class="subtitle">Compare the published artifact with independently reproduced builds.</p>
+        </div>
+        <div class="network"><span class="pulse"></span>3 builders online</div>
+      </header>
+
+      <div class="workspace">
+        <section>
+          <article class="card">
+            <div class="card-head"><h2>Release candidate</h2><span class="demo-badge">Interactive demo</span></div>
+            <div class="card-body">
+              <div class="release-meta">
+                <div class="field wide"><span class="label">Source repository</span><span class="value source-link">github.com/rakyll/hey</span></div>
+                <div class="field"><span class="label">Release</span><span class="value mono">v0.1.5</span></div>
+                <div class="field"><span class="label">Target</span><span class="value mono">linux / amd64</span></div>
+                <div class="field wide"><span class="label">Pinned source commit</span><span class="value mono">f7f0f8b6330c6c7f2c12…</span></div>
+              </div>
+
+              <div class="scenario-wrap">
+                <label for="scenario">Choose a release scenario</label>
+                <select id="scenario">
+                  <option value="valid">Valid release — all builders agree</option>
+                  <option value="tampered">Tampered artifact — released file was changed</option>
+                  <option value="conflict">Builder disagreement — one result conflicts</option>
+                </select>
+                <p class="hint" id="scenarioHint">The released file matches all independently reproduced builds.</p>
+              </div>
+
+              <button class="run-btn" id="runButton">Run verification</button>
+            </div>
+          </article>
+
+          <article class="card" style="margin-top:18px">
+            <div class="card-head"><h2>Independent builders</h2><span class="step" id="buildCount">0 / 3 complete</span></div>
+            <div class="card-body builder-list" id="builders">
+              <div class="builder" data-builder="0">
+                <div class="builder-icon">GH</div>
+                <div><div class="builder-name">Northstar CI</div><div class="builder-env">GitHub Actions · Ubuntu 24.04</div></div>
+                <div class="builder-result"><span class="builder-state">Ready</span></div>
+              </div>
+              <div class="builder" data-builder="1">
+                <div class="builder-icon">PX</div>
+                <div><div class="builder-name">Parallax Labs</div><div class="builder-env">Podman · Debian 13</div></div>
+                <div class="builder-result"><span class="builder-state">Ready</span></div>
+              </div>
+              <div class="builder" data-builder="2">
+                <div class="builder-icon">LC</div>
+                <div><div class="builder-name">Local Witness</div><div class="builder-env">Self-hosted · Fedora 43</div></div>
+                <div class="builder-result"><span class="builder-state">Ready</span></div>
+              </div>
+            </div>
+          </article>
+
+          <article class="card result-card">
+            <div class="decision waiting" id="decision">
+              <div class="decision-mark" id="decisionIcon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 8v5m0 3h.01"/></svg></div>
+              <div><h2 id="decisionTitle">Awaiting verification</h2><p id="decisionText">Run the independent builders to determine whether this release satisfies the quorum policy.</p></div>
+            </div>
+          </article>
+        </section>
+
+        <section class="right-stack">
+          <article class="card">
+            <div class="card-head"><h2>Quorum policy</h2><span class="step">STRICT</span></div>
+            <div class="card-body">
+              <div class="policy-score">
+                <div class="score-ring"><span>2 of 3</span></div>
+                <div><strong>Independent majority</strong><p>At least two distinct operators must reproduce the same artifact.</p></div>
+              </div>
+              <div class="rules">
+                <div class="rule"><span class="check" data-rule="matches">·</span>Two matching artifact fingerprints</div>
+                <div class="rule"><span class="check" data-rule="operators">·</span>Two independent operators</div>
+                <div class="rule"><span class="check" data-rule="candidate">·</span>Released file matches consensus</div>
+                <div class="rule"><span class="check" data-rule="conflicts">·</span>No trusted builder conflicts</div>
+              </div>
+            </div>
+          </article>
+
+          <article class="card">
+            <div class="card-head"><h2>Verification record</h2><span class="step">HASH-CHAINED</span></div>
+            <div class="card-body">
+              <div class="timeline" id="timeline">
+                <div class="event done"><strong>Release registered</strong>Pinned to source commit and build recipe</div>
+                <div class="event"><strong>Builders requested</strong>Waiting for verification to begin</div>
+                <div class="event"><strong>Attestations collected</strong>No signed results received yet</div>
+                <div class="event"><strong>Decision recorded</strong>Pending quorum policy evaluation</div>
+              </div>
+              <div class="audit-hash" id="auditHash">chain: 8fd7c2…e341</div>
+            </div>
+          </article>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <script>
+    const scenario = document.querySelector('#scenario');
+    const hint = document.querySelector('#scenarioHint');
+    const runButton = document.querySelector('#runButton');
+    const buildCount = document.querySelector('#buildCount');
+    const builderEls = [...document.querySelectorAll('.builder')];
+    const decision = document.querySelector('#decision');
+    const decisionTitle = document.querySelector('#decisionTitle');
+    const decisionText = document.querySelector('#decisionText');
+    const decisionIcon = document.querySelector('#decisionIcon');
+    const ruleEls = Object.fromEntries([...document.querySelectorAll('[data-rule]')].map(el => [el.dataset.rule, el]));
+    const timelineEls = [...document.querySelectorAll('.event')];
+    const auditHash = document.querySelector('#auditHash');
+
+    const goodHash = '73bc91e4…a20f';
+    const badHash = 'badd09f1…77c2';
+    const scenarios = {
+      valid: {
+        hint: 'The released file matches all independently reproduced builds.',
+        builderHashes: [goodHash, goodHash, goodHash],
+        title: 'Release verified',
+        text: '3 independent builders reproduced the published artifact. This release satisfies the strict quorum policy.',
+        tone: 'green',
+        rules: { matches: true, operators: true, candidate: true, conflicts: true },
+        chain: 'chain: c438ba…91e7'
+      },
+      tampered: {
+        hint: 'The builders agree with each other, but the released file has a different fingerprint.',
+        builderHashes: [goodHash, goodHash, goodHash],
+        title: 'Release rejected',
+        text: 'The published artifact does not match the version reproduced from source. Do not install this file.',
+        tone: 'red',
+        rules: { matches: true, operators: true, candidate: false, conflicts: true },
+        chain: 'chain: 712fea…0c44'
+      },
+      conflict: {
+        hint: 'One trusted builder produces a different artifact and Quorum surfaces the disagreement.',
+        builderHashes: [goodHash, goodHash, badHash],
+        title: 'Builder disagreement',
+        text: 'Two builders agree, but one trusted builder reported a conflicting artifact. Manual investigation is required.',
+        tone: 'amber',
+        rules: { matches: true, operators: true, candidate: true, conflicts: false },
+        chain: 'chain: e8290d…18af'
+      }
+    };
+
+    const icons = {
+      green: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3"><path d="m6 12 4 4 8-9"/></svg>',
+      red: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3"><path d="m7 7 10 10M17 7 7 17"/></svg>',
+      amber: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1"><path d="M12 3 2.8 19h18.4L12 3Z"/><path d="M12 9v4m0 3h.01"/></svg>'
+    };
+
+    scenario.addEventListener('change', () => {
+      hint.textContent = scenarios[scenario.value].hint;
+      resetResults();
+    });
+
+    function resetResults() {
+      buildCount.textContent = '0 / 3 complete';
+      builderEls.forEach(el => {
+        el.classList.remove('active');
+        el.querySelector('.builder-result').innerHTML = '<span class="builder-state">Ready</span>';
+      });
+      decision.className = 'decision waiting';
+      decisionTitle.textContent = 'Awaiting verification';
+      decisionText.textContent = 'Run the independent builders to determine whether this release satisfies the quorum policy.';
+      Object.values(ruleEls).forEach(el => { el.className = 'check'; el.textContent = '·'; });
+      timelineEls.forEach((el, i) => el.classList.toggle('done', i === 0));
+      timelineEls[1].innerHTML = '<strong>Builders requested</strong>Waiting for verification to begin';
+      timelineEls[2].innerHTML = '<strong>Attestations collected</strong>No signed results received yet';
+      timelineEls[3].innerHTML = '<strong>Decision recorded</strong>Pending quorum policy evaluation';
+      auditHash.textContent = 'chain: 8fd7c2…e341';
+    }
+
+    const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+    runButton.addEventListener('click', async () => {
+      const data = scenarios[scenario.value];
+      resetResults();
+      runButton.disabled = true;
+      runButton.textContent = 'Verification in progress…';
+      timelineEls[1].classList.add('done');
+      timelineEls[1].innerHTML = '<strong>Builders requested</strong>Build jobs dispatched to 3 operators';
+
+      builderEls.forEach(el => {
+        el.classList.add('active');
+        el.querySelector('.builder-result').innerHTML = '<div class="spinner" aria-label="Building"></div>';
+      });
+
+      for (let i = 0; i < builderEls.length; i++) {
+        await wait(520 + i * 120);
+        const el = builderEls[i];
+        el.classList.remove('active');
+        const mismatch = data.builderHashes[i] === badHash;
+        el.querySelector('.builder-result').innerHTML = `<span class="builder-hash" style="${mismatch ? 'color:var(--red)' : ''}">${data.builderHashes[i]}</span><span class="builder-state">Signature valid</span>`;
+        buildCount.textContent = `${i + 1} / 3 complete`;
+      }
+
+      timelineEls[2].classList.add('done');
+      timelineEls[2].innerHTML = '<strong>Attestations collected</strong>3 signed build statements verified';
+      await wait(420);
+
+      Object.entries(data.rules).forEach(([name, pass]) => {
+        const el = ruleEls[name];
+        el.className = `check ${pass ? 'pass' : 'fail'}`;
+        el.textContent = pass ? '✓' : '×';
+      });
+
+      decision.className = `decision ${data.tone === 'green' ? '' : data.tone}`.trim();
+      decisionIcon.innerHTML = icons[data.tone];
+      decisionTitle.textContent = data.title;
+      decisionText.textContent = data.text;
+      timelineEls[3].classList.add('done');
+      timelineEls[3].innerHTML = `<strong>Decision recorded</strong>${data.title} under strict policy`;
+      auditHash.textContent = data.chain;
+      runButton.disabled = false;
+      runButton.textContent = 'Run verification again';
+    });
+  </script>
+</body>
+</html>
