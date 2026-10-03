@@ -18,8 +18,12 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field, HttpUrl
+from pydantic import BaseModel, Field, HttpUrl, model_validator
+
+from backend import blockchain
+from backend.policy import QuorumPolicy, decide
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -40,9 +44,17 @@ def canonical_json(value: dict) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
 
 
+class ClosingConnection(sqlite3.Connection):
+    def __exit__(self, *args):
+        try:
+            return super().__exit__(*args)
+        finally:
+            self.close()
+
+
 def connect() -> sqlite3.Connection:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(DB_PATH)
+    connection = sqlite3.connect(DB_PATH, factory=ClosingConnection)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
     return connection
@@ -101,6 +113,20 @@ def init_db() -> None:
                 created_at TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS blockchain_anchors (
+                release_id TEXT PRIMARY KEY REFERENCES releases(id) ON DELETE CASCADE,
+                evidence_sha256 TEXT NOT NULL,
+                evidence_json TEXT NOT NULL,
+                release_id_hash TEXT NOT NULL,
+                chain_id INTEGER NOT NULL,
+                contract_address TEXT NOT NULL,
+                transaction_hash TEXT NOT NULL,
+                block_number INTEGER NOT NULL,
+                gas_used INTEGER NOT NULL,
+                submitter TEXT NOT NULL,
+                anchored_at TEXT NOT NULL
+            );
+
             CREATE INDEX IF NOT EXISTS idx_attestations_release_id
             ON attestations(release_id);
 
@@ -120,6 +146,8 @@ def init_db() -> None:
                 "ALTER TABLE releases ADD COLUMN expected_builders INTEGER NOT NULL DEFAULT 3"
             )
         db.execute("PRAGMA optimize")
+        db.execute('CREATE TABLE IF NOT EXISTS release_policies (release_id TEXT PRIMARY KEY REFERENCES releases(id), policy_json TEXT NOT NULL)')
+        db.execute('CREATE TABLE IF NOT EXISTS release_recipes (release_id TEXT PRIMARY KEY REFERENCES releases(id), recipe_json TEXT NOT NULL)')
     seed_demo_builders()
 
 
@@ -183,6 +211,21 @@ class ReleaseCreate(BaseModel):
     threshold: int = Field(default=2, ge=1, le=20)
     expected_builders: int = Field(default=3, ge=1, le=20)
     reject_on_conflict: bool = True
+    policy: QuorumPolicy | None = None
+    recipe: dict | None = None
+
+    @model_validator(mode='after')
+    def validate_recipe_and_policy(self):
+        if self.policy is None:
+            QuorumPolicy(threshold=self.threshold, expected_builders=self.expected_builders,
+                         minimum_operators=self.threshold, reject_on_conflict=self.reject_on_conflict)
+        if self.recipe is not None:
+            if hashlib.sha256(canonical_json(self.recipe).encode()).hexdigest() != self.recipe_sha256:
+                raise ValueError('Recipe does not match recipe_sha256')
+            for field, expected in [('source_commit', self.source_commit), ('repository_url', str(self.repository_url)), ('artifact_name', self.artifact_name)]:
+                if self.recipe.get(field) != expected:
+                    raise ValueError(f'Recipe {field} does not match release')
+        return self
 
 
 class AttestationCreate(BaseModel):
@@ -325,6 +368,10 @@ class SystemStatsResponse(BaseModel):
 
 
 def create_release(data: ReleaseCreate) -> dict:
+    policy = data.policy or QuorumPolicy(threshold=data.threshold, expected_builders=data.expected_builders,
+                                        minimum_operators=data.threshold, reject_on_conflict=data.reject_on_conflict)
+    data = data.model_copy(update=dict(threshold=policy.threshold, expected_builders=policy.expected_builders,
+                                      reject_on_conflict=policy.reject_on_conflict))
     release_id = str(uuid.uuid4())
     with connect() as db:
         db.execute(
@@ -347,6 +394,9 @@ def create_release(data: ReleaseCreate) -> dict:
                 utc_now(),
             ),
         )
+        db.execute('INSERT INTO release_policies VALUES (?, ?)', (release_id, canonical_json(policy.model_dump())))
+        if data.recipe is not None:
+            db.execute('INSERT INTO release_recipes VALUES (?, ?)', (release_id, canonical_json(data.recipe)))
         chain_head = append_audit_event(
             db,
             release_id,
@@ -356,6 +406,7 @@ def create_release(data: ReleaseCreate) -> dict:
                 "source_commit": data.source_commit,
                 "artifact_name": data.artifact_name,
                 "recipe_sha256": data.recipe_sha256,
+                "policy": policy.model_dump(),
             },
         )
     return {"id": release_id, "status": "pending", "audit_chain_head": chain_head}
@@ -451,6 +502,18 @@ def evaluate_release(release_id: str) -> dict:
             (release_id,),
         ).fetchall()
 
+        for row in rows:
+            try:
+                stored = AttestationCreate(schema_version=json.loads(row['payload_json'])['schema_version'],
+                    builder_id=row['builder_id'], artifact_sha256=row['artifact_sha256'], environment=row['environment'],
+                    built_at=row['built_at'], signature=row['signature'])
+                payload = attestation_payload(release, stored)
+                if canonical_json(payload) != row['payload_json']:
+                    raise ValueError('Stored attestation binding changed')
+                Ed25519PublicKey.from_public_bytes(base64.b64decode(row['public_key'], validate=True)).verify(
+                    base64.b64decode(row['signature'], validate=True), canonical_json(payload).encode())
+            except (ValueError, KeyError, InvalidSignature, binascii.Error):
+                raise HTTPException(status_code=409, detail='Stored attestation integrity failure') from None
         counts = Counter(row["artifact_sha256"] for row in rows)
         consensus_hash, matching = counts.most_common(1)[0] if counts else (None, 0)
         consensus_rows = [row for row in rows if row["artifact_sha256"] == consensus_hash]
@@ -459,21 +522,12 @@ def evaluate_release(release_id: str) -> dict:
         candidate_matches = consensus_hash == release["candidate_sha256"] if consensus_hash else False
         signatures_valid = bool(rows) and all(row["signature_valid"] for row in rows)
 
-        expected_builders = release["expected_builders"]
-
-        if len(rows) < release["threshold"]:
-            status = "pending"
-        elif has_conflict and release["reject_on_conflict"]:
-            status = "disagreement"
-        elif not candidate_matches:
-            status = "rejected"
-        elif matching >= release["threshold"] and distinct_operators >= release["threshold"]:
-            status = "verified"
-        elif len(rows) >= expected_builders:
-            status = "rejected"
-        else:
-            status = "pending"
-
+        saved_policy = db.execute('SELECT policy_json FROM release_policies WHERE release_id = ?', (release_id,)).fetchone()
+        policy = QuorumPolicy.model_validate_json(saved_policy[0]) if saved_policy else QuorumPolicy(
+            threshold=release['threshold'], expected_builders=release['expected_builders'],
+            minimum_operators=release['threshold'], reject_on_conflict=bool(release['reject_on_conflict']))
+        outcome = decide([dict(row, id=row['builder_id']) for row in rows], release['candidate_sha256'], policy)
+        status = outcome['status']
         previous_status = release["status"]
         db.execute(
             "UPDATE releases SET status = ?, consensus_sha256 = ? WHERE id = ?",
@@ -501,7 +555,7 @@ def evaluate_release(release_id: str) -> dict:
         "rules": {
             "signatures": signatures_valid,
             "matches": matching >= release["threshold"],
-            "operators": distinct_operators >= release["threshold"],
+            "operators": distinct_operators >= policy.minimum_operators,
             "candidate": candidate_matches,
             "conflicts": not has_conflict,
         },
@@ -543,6 +597,176 @@ def get_release_record(release_id: str) -> dict:
     result["release"] = dict(release)
     result["audit_events"] = [dict(event) for event in events]
     return result
+
+
+def build_evidence_snapshot(release_id: str) -> dict:
+    verification = get_release_record(release_id)
+    with connect() as db:
+        public_keys = {
+            row["id"]: row["public_key"]
+            for row in db.execute("SELECT id, public_key FROM builders").fetchall()
+        }
+    builders = [
+        {**builder, "public_key": public_keys[builder["id"]]}
+        for builder in verification["builders"]
+    ]
+    release = verification["release"]
+    with connect() as db:
+        saved = db.execute('SELECT policy_json FROM release_policies WHERE release_id = ?', (release_id,)).fetchone()
+        recipe = db.execute('SELECT recipe_json FROM release_recipes WHERE release_id = ?', (release_id,)).fetchone()
+    policy = json.loads(saved[0]) if saved else QuorumPolicy(threshold=release['threshold'],
+        expected_builders=release['expected_builders'], minimum_operators=release['threshold'],
+        reject_on_conflict=bool(release['reject_on_conflict'])).model_dump()
+    return {
+        "schema_version": "quorum.evidence.v1",
+        "recipe": json.loads(recipe[0]) if recipe else None,
+        "recipe_available": recipe is not None,
+        "release": release,
+        "decision": {
+            "status": verification["status"],
+            "consensus_sha256": verification["consensus_sha256"],
+            "candidate_sha256": verification["candidate_sha256"],
+            "attestation_count": verification["attestation_count"],
+            "rules": verification["rules"],
+        },
+        "policy": policy,
+        "policy_sha256": hashlib.sha256(canonical_json(policy).encode()).hexdigest(),
+        "builders": builders,
+        "audit_events": verification["audit_events"],
+        "audit_chain_head": verification["audit_chain_head"],
+    }
+
+
+def get_blockchain_anchor(release_id: str) -> dict | None:
+    with connect() as db:
+        row = db.execute(
+            "SELECT * FROM blockchain_anchors WHERE release_id = ?", (release_id,)
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def generate_audit_report(release_id: str) -> dict:
+    anchor = get_blockchain_anchor(release_id)
+    evidence = (
+        json.loads(anchor["evidence_json"]) if anchor else build_evidence_snapshot(release_id)
+    )
+    evidence_sha256 = hashlib.sha256(canonical_json(evidence).encode()).hexdigest()
+    if anchor and evidence_sha256 != anchor["evidence_sha256"]:
+        raise HTTPException(status_code=500, detail="Stored evidence no longer matches its anchor")
+
+    blockchain_record: dict = {"anchored": False}
+    if anchor:
+        blockchain_record = {
+            "anchored": True,
+            "chain_id": anchor["chain_id"],
+            "contract_address": anchor["contract_address"],
+            "transaction_hash": anchor["transaction_hash"],
+            "block_number": anchor["block_number"],
+            "gas_used": anchor["gas_used"],
+            "release_id_hash": anchor["release_id_hash"],
+            "submitter": anchor["submitter"],
+            "anchored_at": anchor["anchored_at"],
+        }
+        config = blockchain.load_config()
+        if config:
+            blockchain_record["get_anchor_selector"] = config.get_anchor_selector
+        try:
+            on_chain = blockchain.read_anchor(config, release_id) if config else None
+            blockchain_record["on_chain_match"] = bool(
+                on_chain
+                and on_chain["evidence_sha256"] == evidence_sha256
+                and on_chain["release_id_hash"] == anchor["release_id_hash"]
+            )
+        except blockchain.BlockchainError:
+            blockchain_record["on_chain_match"] = None
+
+    report = {
+        "schema_version": "quorum.audit-report.v1",
+        "generated_at": utc_now(),
+        "release_id": release_id,
+        "evidence_sha256": evidence_sha256,
+        "evidence": evidence,
+        "blockchain": blockchain_record,
+        "offline_verification": {
+            "command": "python scripts/verify_audit_report.py audit-report.json --trusted-report-key YOUR_TRUSTED_PUBLIC_KEY",
+            "checks": [
+                "evidence SHA-256",
+                "Ed25519 builder signatures",
+                "audit hash chain",
+                "quorum decision replay",
+            ],
+        },
+    }
+    from backend.passport import sign_report, verify_passport
+    signed = sign_report(report, DB_PATH.with_suffix('.report-key'))
+    if not verify_passport(signed)['valid']:
+        raise HTTPException(status_code=409, detail='Evidence integrity failure; refusing to issue passport')
+    return signed
+
+
+def anchor_release(release_id: str) -> dict:
+    existing = get_blockchain_anchor(release_id)
+    if existing:
+        return generate_audit_report(release_id)
+
+    evidence = generate_audit_report(release_id)['evidence']
+    decision = evidence["decision"]["status"]
+    if decision == "pending":
+        raise HTTPException(status_code=409, detail="A pending release cannot be anchored")
+    config = blockchain.load_config()
+    if not config:
+        raise HTTPException(
+            status_code=503,
+            detail="Blockchain is not configured. Run scripts/deploy_blockchain.py first.",
+        )
+    evidence_json = canonical_json(evidence)
+    evidence_sha256 = hashlib.sha256(evidence_json.encode()).hexdigest()
+    try:
+        chain_record = blockchain.anchor_evidence(
+            config,
+            release_id=release_id,
+            evidence_sha256=evidence_sha256,
+            decision=decision,
+            conflict=not evidence["decision"]["rules"]["conflicts"],
+        )
+    except blockchain.BlockchainError as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
+
+    anchored_at = utc_now()
+    with connect() as db:
+        db.execute(
+            """
+            INSERT INTO blockchain_anchors
+                (release_id, evidence_sha256, evidence_json, release_id_hash, chain_id,
+                 contract_address, transaction_hash, block_number, gas_used, submitter, anchored_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                release_id,
+                evidence_sha256,
+                evidence_json,
+                chain_record["release_id_hash"],
+                chain_record["chain_id"],
+                chain_record["contract_address"],
+                chain_record["transaction_hash"],
+                chain_record["block_number"],
+                chain_record["gas_used"],
+                chain_record["submitter"],
+                anchored_at,
+            ),
+        )
+        append_audit_event(
+            db,
+            release_id,
+            "blockchain.evidence.anchored",
+            {
+                "evidence_sha256": evidence_sha256,
+                "transaction_hash": chain_record["transaction_hash"],
+                "block_number": chain_record["block_number"],
+                "chain_id": chain_record["chain_id"],
+            },
+        )
+    return generate_audit_report(release_id)
 
 
 def run_demo_verification(
@@ -647,13 +871,14 @@ def get_system_stats() -> dict:
         if completed
         else 100.0
     )
+    blockchain_config = blockchain.load_config()
     return {
         "releases_verified": release_counts.get("verified", 0),
         "releases_rejected": release_counts.get("rejected", 0),
         "conflicts_detected": release_counts.get("disagreement", 0),
         "active_builders": active_builders,
-        "network": "Local verifier",
-        "contract_address": "Not configured",
+        "network": f"Anvil {blockchain_config.chain_id}" if blockchain_config else "Local verifier",
+        "contract_address": blockchain_config.contract_address if blockchain_config else "Not configured",
         "consensus_health": consensus_health,
         "average_verification_time_seconds": 0.0,
     }
@@ -670,13 +895,18 @@ def register_builder(data: BuilderRegistrationRequest) -> dict:
 
     with connect() as db:
         existing = db.execute(
-            "SELECT public_key FROM builders WHERE id = ?", (data.id,)
+            "SELECT public_key, operator FROM builders WHERE id = ?", (data.id,)
         ).fetchone()
         if existing and existing["public_key"] != data.public_key:
             raise HTTPException(
                 status_code=409,
                 detail="Builder id is already bound to a different signing key",
             )
+        if existing and existing['operator'] != data.operator:
+            raise HTTPException(status_code=409, detail='Builder operator identity is immutable')
+        duplicate = db.execute('SELECT id FROM builders WHERE public_key = ? AND id != ?', (data.public_key, data.id)).fetchone()
+        if duplicate:
+            raise HTTPException(status_code=409, detail='Signing key is already registered to another builder')
         db.execute(
             """
             INSERT INTO builders (id, name, operator, platform, public_key, trusted, created_at)
@@ -787,6 +1017,11 @@ def system_stats_v1() -> dict:
     return get_system_stats()
 
 
+@app.get("/api/v1/blockchain/status")
+def blockchain_status_v1() -> dict:
+    return blockchain.status()
+
+
 @app.get("/api/v1/builders", response_model=list[BuilderRegistryResponse])
 def builders_v1() -> list[dict]:
     return list_builders()
@@ -854,12 +1089,116 @@ def release_details_v1(release_id: str) -> dict:
     return get_release_record(release_id)
 
 
+@app.get("/api/v1/releases/{release_id}/audit-events", response_model=list[AuditEventResponse])
+def audit_events_v1(release_id: str) -> list[dict]:
+    return get_release_record(release_id)["audit_events"]
+
+
+@app.get("/api/v1/releases/{release_id}/audit-report")
+def audit_report_v1(release_id: str) -> JSONResponse:
+    report = generate_audit_report(release_id)
+    return JSONResponse(
+        content=report,
+        headers={
+            "Content-Disposition": f'attachment; filename="quorum-audit-{release_id}.json"'
+        },
+    )
+
+
+@app.post("/api/v1/releases/{release_id}/anchor")
+def anchor_release_v1(release_id: str) -> dict:
+    return anchor_release(release_id)
+
+
 @app.post(
     "/api/v1/releases/{release_id}/consumer-verifications",
     response_model=ConsumerArtifactResponse,
 )
 def consumer_artifact_verification(release_id: str, data: ConsumerArtifactRequest) -> dict:
     return verify_consumer_artifact(release_id, data)
+
+
+@app.post('/api/v1/releases/{release_id}/evaluate')
+def evaluate_policy_v1(release_id: str, policy: QuorumPolicy) -> dict:
+    evidence = build_evidence_snapshot(release_id)
+    result = decide(evidence['builders'], evidence['release']['candidate_sha256'], policy)
+    with connect() as db:
+        append_audit_event(db, release_id, 'policy.evaluated', {'policy': policy.model_dump(), 'decision': result})
+    return {'release_id': release_id, 'policy': policy.model_dump(), **result,
+            'scope': 'Consumer evaluation; original release policy is unchanged'}
+
+
+@app.get('/api/v1/releases/{release_id}/integrity')
+def integrity_v1(release_id: str) -> dict:
+    from backend.passport import verify_passport
+    report = generate_audit_report(release_id)
+    result = verify_passport(report, report['report_signature']['public_key'])
+    return {**result, 'scope': 'Current backend snapshot, not an external checkpoint',
+            'report_public_key': report['report_signature']['public_key']}
+
+
+class AttackRequest(BaseModel):
+    scenario: Literal['valid', 'modified-candidate', 'conflicting-output', 'invalid-signature',
+                      'unknown-builder', 'wrong-commit', 'replay', 'modified-report']
+    policy: QuorumPolicy = Field(default_factory=QuorumPolicy)
+
+
+@app.post('/api/v1/attack-lab/run')
+def attack_lab_v1(data: AttackRequest) -> dict:
+    from backend.passport import verify_passport
+    clean = hashlib.sha256(b'Quorum attack-lab fixture v1').hexdigest()
+    altered = hashlib.sha256(b'Quorum attack-lab fixture v1\x00injected').hexdigest()
+    created = create_release(ReleaseCreate(repository_url='https://github.com/rakyll/hey',
+        source_commit=DEMO_SOURCE_COMMIT, artifact_name='attack-lab-fixture',
+        recipe_sha256=DEMO_RECIPE_SHA256,
+        candidate_sha256=altered if data.scenario == 'modified-candidate' else clean,
+        policy=data.policy))
+    release_id = created['id']
+    observed = []
+    expected_errors = {'invalid-signature': 400, 'unknown-builder': 403, 'wrong-commit': 400, 'replay': 409}
+    for index, builder_id in enumerate(('northstar-ci', 'parallax-labs', 'local-witness')):
+        digest = altered if data.scenario == 'conflicting-output' and index == 2 else clean
+        signed = sign_demo_attestation(release_id, builder_id, digest, 'Attack Lab fixture (not a source build)')
+        if index == 2:
+            if data.scenario == 'invalid-signature':
+                signed = signed.model_copy(update={'signature': base64.b64encode(bytes(64)).decode()})
+            elif data.scenario == 'unknown-builder':
+                signed = signed.model_copy(update={'builder_id': 'unregistered-attacker'})
+            elif data.scenario == 'wrong-commit':
+                with connect() as db:
+                    release = dict(db.execute('SELECT * FROM releases WHERE id = ?', (release_id,)).fetchone())
+                release['source_commit'] = '0' * 40
+                payload = attestation_payload(release, signed)
+                signed = signed.model_copy(update={'signature': base64.b64encode(demo_private_key(builder_id).sign(canonical_json(payload).encode())).decode()})
+        try:
+            submit_attestation(release_id, signed)
+            if data.scenario == 'replay' and index == 2:
+                submit_attestation(release_id, signed)
+        except HTTPException as error:
+            observed.append({'builder_id': signed.builder_id, 'status_code': error.status_code, 'reason': error.detail})
+    verification = get_release_record(release_id)
+    report_check = None
+    if data.scenario == 'modified-report':
+        report = generate_audit_report(release_id)
+        report['evidence']['audit_events'].pop()
+        report['evidence_sha256'] = hashlib.sha256(canonical_json(report['evidence']).encode()).hexdigest()
+        report_check = verify_passport(report, report['report_signature']['public_key'])
+    expected = expected_errors.get(data.scenario)
+    if expected:
+        passed = any(item['status_code'] == expected for item in observed)
+    elif report_check is not None:
+        passed = not report_check['valid']
+    elif data.scenario == 'valid':
+        passed = verification['status'] == 'verified'
+    elif data.scenario == 'modified-candidate':
+        passed = verification['status'] == 'rejected'
+    else:
+        passed = not verification['rules']['conflicts'] and (not data.policy.reject_on_conflict or verification['status'] == 'disagreement')
+    with connect() as db:
+        append_audit_event(db, release_id, 'attack.exercise', {'scenario': data.scenario, 'observed_rejections': observed, 'passed': passed})
+    return {'scenario': data.scenario, 'passed': passed, 'observed_rejections': observed,
+            'report_check': report_check, 'verification': get_release_record(release_id),
+            'evidence_mode': 'Synthetic artifact bytes; real SHA-256, Ed25519, API admission checks and policy engine. No source compilation in this exercise.'}
 
 
 app.mount("/", StaticFiles(directory=ROOT / "dist", html=True), name="frontend")

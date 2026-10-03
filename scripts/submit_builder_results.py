@@ -85,6 +85,7 @@ def main() -> None:
             "source_commit": first["source"]["commit"],
             "artifact_name": first["build"]["artifact_name"],
             "recipe_sha256": first["build"]["recipe_sha256"],
+            "recipe": first["build"].get("recipe"),
             "candidate_sha256": args.candidate_sha256
             or first["build"]["artifact_sha256"],
             "threshold": args.threshold,

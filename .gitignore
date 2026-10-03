@@ -16,3 +16,9 @@ backend/data/
 # Local builder identities and generated evidence
 .quorum/
 builder-results/
+
+# Foundry build output
+contracts/cache/
+contracts/out/
+contracts/broadcast/
+*.report-key

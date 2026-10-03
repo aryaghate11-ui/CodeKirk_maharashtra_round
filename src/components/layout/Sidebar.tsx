@@ -149,7 +149,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 Network
               </span>
               <span className="font-mono text-[11px] text-brand-text font-medium">
-                Sepolia Testnet
+                {stats?.network || 'Not connected'}
               </span>
             </div>
 

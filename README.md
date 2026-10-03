@@ -28,6 +28,8 @@ The SQLite database is created at `backend/data/quorum.db` and is intentionally 
 - Static fallback mode for the hosted dashboard
 - Real pinned-commit Go builder agent with isolated workspaces
 - Three separately keyed builder profiles and GitHub Actions witness workflow
+- Solidity evidence-anchor contract with local Anvil deployment
+- Downloadable audit passport with offline signature, policy and hash-chain verification
 
 The demo builder keys are deterministic and exist only to demonstrate the end-to-end signature flow. Real builders must use separately generated private keys stored outside the repository.
 
@@ -47,14 +49,27 @@ To prove disagreement handling with real signed evidence:
 
 This local command uses three fresh workspaces and three separate signing keys on one host. It proves the protocol, reproducibility, signature checks, quorum decision, and conflict detection. To claim real operational decentralization, run the three profiles on GitHub Actions and two independently controlled laptops as described in `docs/BUILDER_AGENT.md`.
 
+## Blockchain and audit passport
+
+Quorum keeps full evidence in SQLite and stores only the frozen evidence SHA-256,
+release ID hash, decision and conflict flag in the `QuorumEvidence` Solidity
+contract. The free local demonstration uses Anvil chain `31337`.
+
+Setup, deployment and offline verification commands are documented in
+`docs/BLOCKCHAIN_AND_AUDIT.md`.
+
 ## API v1
 
 - `GET /api/v1/health`
 - `GET /api/v1/stats`
 - `GET /api/v1/builders`
+- `GET /api/v1/blockchain/status`
 - `POST /api/v1/builders`
 - `POST /api/v1/releases`
 - `POST /api/v1/releases/{release_id}/attestations`
+- `POST /api/v1/releases/{release_id}/anchor`
+- `GET /api/v1/releases/{release_id}/audit-report`
+- `GET /api/v1/releases/{release_id}/audit-events`
 - `POST /api/v1/demo/verify`
 - `GET /api/v1/releases`
 - `GET /api/v1/releases/{release_id}`

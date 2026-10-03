@@ -4,23 +4,47 @@ import { AuditMetadataCard } from '../components/audit/AuditMetadataCard';
 import { AuditEvent, AuditReport } from '../types';
 import { api } from '../services/api';
 import { Card, CardHeader, CardBody } from '../components/common/Card';
-import { ScrollText, ShieldCheck, Filter, Download } from 'lucide-react';
+import { ScrollText, ShieldCheck } from 'lucide-react';
 
 export const AuditHistoryPage: React.FC = () => {
   const [events, setEvents] = useState<AuditEvent[]>([]);
   const [report, setReport] = useState<AuditReport | null>(null);
   const [loading, setLoading] = useState(true);
   const [filterType, setFilterType] = useState<string>('all');
+  const [releaseId, setReleaseId] = useState('rel-hey-01');
+  const [anchoring, setAnchoring] = useState(false);
+  const [anchorError, setAnchorError] = useState<string | null>(null);
 
   useEffect(() => {
-    Promise.all([api.getAuditEvents('rel-hey-01'), api.getAudit('rel-hey-01')]).then(
-      ([evts, rep]) => {
-        setEvents(evts);
-        setReport(rep);
-        setLoading(false);
-      }
-    );
+    api.detectBackend().then(async (available) => {
+      if (!available) throw new Error('Backend unavailable. Audit History requires real backend evidence.');
+      const releases = await api.getReleases();
+      const selectedReleaseId = releases[0]?.id;
+      if (!selectedReleaseId) throw new Error('No releases yet. Run a verification first.');
+      setReleaseId(selectedReleaseId);
+      const [evts, rep] = await Promise.all([
+        api.getAuditEvents(selectedReleaseId),
+        api.getAudit(selectedReleaseId),
+      ]);
+      setEvents(evts);
+      setReport(rep);
+      setLoading(false);
+    }).catch(error => { setAnchorError(error.message); setLoading(false); });
   }, []);
+
+  const handleAnchor = async () => {
+    setAnchoring(true);
+    setAnchorError(null);
+    try {
+      const anchoredReport = await api.anchorRelease(releaseId);
+      setReport(anchoredReport);
+      setEvents(await api.getAuditEvents(releaseId));
+    } catch (error) {
+      setAnchorError(error instanceof Error ? error.message : 'Could not anchor this evidence.');
+    } finally {
+      setAnchoring(false);
+    }
+  };
 
   const filteredEvents = events.filter((e) => {
     if (filterType === 'all') return true;
@@ -30,12 +54,13 @@ export const AuditHistoryPage: React.FC = () => {
     return true;
   });
 
+  if (!loading && !report) return <p role="alert" className="text-amber-400">{anchorError}</p>;
   if (loading || !report) {
     return (
       <div className="flex items-center justify-center min-h-[400px]">
         <div className="text-center space-y-3">
           <div className="w-8 h-8 rounded-full border-2 border-quorum-green border-t-transparent animate-spin mx-auto" />
-          <p className="text-xs font-mono text-brand-muted">Retrieving on-chain audit ledger...</p>
+          <p className="text-xs font-mono text-brand-muted">Preparing the verifiable evidence record…</p>
         </div>
       </div>
     );
@@ -48,7 +73,7 @@ export const AuditHistoryPage: React.FC = () => {
         <div>
           <h2 className="text-xl sm:text-2xl font-extrabold text-white tracking-tight flex items-center gap-2">
             <ScrollText className="w-5 h-5 text-quorum-green" />
-            Immutable Audit Trail & Provenance
+            Tamper-evident Audit Trail & Provenance
           </h2>
           <p className="text-xs text-brand-muted mt-1">
             Chronological cryptographic log of build dispatches, attestations, signatures, and smart contract anchoring.
@@ -118,7 +143,12 @@ export const AuditHistoryPage: React.FC = () => {
 
         {/* Audit Metadata Card with Download JSON (Right 1 col) */}
         <div className="lg:col-span-1">
-          <AuditMetadataCard report={report} />
+          <AuditMetadataCard
+            report={report}
+            onAnchor={api.isBackendAvailable() ? handleAnchor : undefined}
+            anchoring={anchoring}
+            anchorError={anchorError}
+          />
         </div>
       </div>
     </div>

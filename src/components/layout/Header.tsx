@@ -138,7 +138,7 @@ export const Header: React.FC<HeaderProps> = ({
             <span className="w-2 h-2 rounded-full bg-quorum-green shadow-[0_0_8px_rgba(16,185,129,0.8)]" />
             <span className="font-medium text-brand-text">{stats?.network || 'Sepolia'}</span>
             <span className="hidden xl:inline text-brand-subtle font-mono text-[11px]">
-              #5.8M
+              Evidence network
             </span>
           </div>
 

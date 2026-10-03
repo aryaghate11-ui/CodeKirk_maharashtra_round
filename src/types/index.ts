@@ -125,6 +125,11 @@ export interface AuditReport {
   timestamp: string;
   gasUsed: string;
   rootSignature: string;
+  anchored?: boolean;
+  onChainMatch?: boolean | null;
+  chainId?: number | null;
+  offlineVerificationCommand?: string;
+  rawReport?: object;
 }
 
 export type ScenarioId = 'valid' | 'conflict' | 'tampered' | 'invalidSignature' | 'auditTampering';

@@ -13,6 +13,8 @@ import {
 import {
   ApiConsumerArtifactResponse,
   ApiBuilderRegistryResponse,
+  ApiAuditEvent,
+  ApiAuditReportResponse,
   ApiSystemStatsResponse,
   ApiVerificationResponse,
   ApiVerificationStatus,
@@ -155,6 +157,121 @@ const mapVerificationResponse = (
     signaturesValid: data.rules.signatures,
     verifiedAt: data.audit_events[data.audit_events.length - 1]?.created_at || data.release.created_at,
     auditChainHash: data.audit_chain_head || '',
+  };
+};
+
+const mapAuditEvent = (event: ApiAuditEvent, index: number): AuditEvent => {
+  const details = JSON.parse(event.event_json) as Record<string, unknown>;
+  const definitions: Record<string, Pick<AuditEvent, 'type' | 'title' | 'status'>> = {
+    'release.registered': {
+      type: 'RELEASE_REGISTERED',
+      title: 'Release registered for verification',
+      status: 'info',
+    },
+    'attestation.accepted': {
+      type: 'ATTESTATION_SUBMITTED',
+      title: 'Signed builder attestation accepted',
+      status: 'success',
+    },
+    'decision.recorded': {
+      type: 'DECISION_FINALIZED',
+      title: 'Quorum decision finalized',
+      status: details.status === 'verified' ? 'success' : 'warning',
+    },
+    'consumer.artifact.verified': {
+      type: 'SIGNATURE_VERIFIED',
+      title: 'Consumer artifact checked',
+      status: details.hash_matches ? 'success' : 'error',
+    },
+    'blockchain.evidence.anchored': {
+      type: 'AUDIT_SEALED',
+      title: 'Evidence SHA-256 anchored on Anvil',
+      status: 'success',
+    },
+  };
+  const definition = definitions[event.event_type] || {
+    type: 'QUORUM_EVALUATED' as const,
+    title: event.event_type,
+    status: 'info' as const,
+  };
+  return {
+    id: event.event_hash || `event-${index}`,
+    timestamp: event.created_at,
+    timeFormatted: new Date(event.created_at).toLocaleTimeString([], {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false,
+    }),
+    ...definition,
+    description: Object.entries(details)
+      .map(([key, value]) => `${key}: ${typeof value === 'object' ? JSON.stringify(value) : String(value)}`)
+      .join(' · '),
+    builderId: typeof details.builder_id === 'string' ? details.builder_id : undefined,
+    txHash: typeof details.transaction_hash === 'string' ? details.transaction_hash : undefined,
+    blockNumber: typeof details.block_number === 'number' ? details.block_number : undefined,
+    evidenceHash: event.event_hash,
+  };
+};
+
+const mapAuditReport = (data: ApiAuditReportResponse): AuditReport => {
+  const evidence = data.evidence;
+  const consensusHash = evidence.decision.consensus_sha256;
+  const agreement = consensusHash
+    ? evidence.builders.filter((builder) => builder.artifact_sha256 === consensusHash).length
+    : 0;
+  const policy: QuorumPolicy = {
+    type: 'k-of-n',
+    k: evidence.policy.threshold,
+    n: evidence.policy.expected_builders,
+    description: `${evidence.policy.threshold}-of-${evidence.policy.expected_builders} signed builder quorum`,
+    strict: evidence.policy.reject_on_conflict,
+    requireUniqueOperators: evidence.policy.minimum_operators > 1,
+    timeoutSeconds: 300,
+  };
+  const attestations: Attestation[] = evidence.builders.map((builder) => ({
+    id: builder.evidence_digest,
+    releaseId: data.release_id,
+    builderId: builder.id,
+    builderName: builder.name,
+    builderAddress: `ed25519:${builder.signing_key_fingerprint}`,
+    artifactHash: builder.artifact_sha256,
+    signature: builder.signature,
+    signatureValid: builder.signature_valid,
+    timestamp: builder.built_at,
+    status: builder.artifact_sha256 === consensusHash ? 'MATCH' : 'CONFLICT',
+    environment: builder.environment,
+    buildDurationMs: 0,
+    logsAvailable: false,
+  }));
+  return {
+    id: `audit-${data.release_id}`,
+    schemaVersion: data.schema_version,
+    releaseId: data.release_id,
+    repo: repositoryLabel(evidence.release.repository_url),
+    commit: evidence.release.source_commit,
+    artifactName: evidence.release.artifact_name,
+    publishedArtifactHash: evidence.release.candidate_sha256,
+    consensusHash,
+    decision: decisionFromStatus(evidence.decision.status),
+    policy,
+    agreement,
+    totalBuilders: evidence.builders.length,
+    conflictDetected: !evidence.decision.rules.conflicts,
+    attestations,
+    evidenceHash: data.evidence_sha256,
+    policyHash: evidence.policy_sha256,
+    contractAddress: data.blockchain.contract_address || 'Not anchored',
+    transactionHash: data.blockchain.transaction_hash || '',
+    blockNumber: data.blockchain.block_number || 0,
+    timestamp: data.blockchain.anchored_at || data.generated_at,
+    gasUsed: data.blockchain.gas_used?.toLocaleString() || '—',
+    rootSignature: data.report_signature.signature,
+    anchored: data.blockchain.anchored,
+    onChainMatch: data.blockchain.on_chain_match,
+    chainId: data.blockchain.chain_id || null,
+    offlineVerificationCommand: data.offline_verification.command,
+    rawReport: data,
   };
 };
 
@@ -410,33 +527,26 @@ class QuorumApiService {
   }
 
   public async getAudit(releaseId: string): Promise<AuditReport> {
-    if (!this.isMockMode() || this.strictBackendMode) {
-      try {
-        const res = await fetch(`${API_BASE}/releases/${encodeURIComponent(releaseId)}/audit`);
-        if (res.ok) return await res.json();
-        throw new BackendError(`Status ${res.status}`, res.status, `/releases/${releaseId}/audit`);
-      } catch (e: any) {
-        return this.handleFailure(`/releases/${releaseId}/audit`, e, () =>
-          generateAuditReport(releaseId)
-        );
-      }
-    }
-    return generateAuditReport(releaseId);
+    const endpoint = `/releases/${encodeURIComponent(releaseId)}/audit-report`;
+    const res = await fetch(`${API_BASE}${endpoint}`);
+    if (res.ok) return mapAuditReport(await res.json() as ApiAuditReportResponse);
+    throw new BackendError(`Status ${res.status}; no mock evidence substituted`, res.status, endpoint);
   }
 
   public async getAuditEvents(releaseId: string): Promise<AuditEvent[]> {
-    if (!this.isMockMode() || this.strictBackendMode) {
-      try {
-        const res = await fetch(`${API_BASE}/releases/${encodeURIComponent(releaseId)}/audit-events`);
-        if (res.ok) return await res.json();
-        throw new BackendError(`Status ${res.status}`, res.status, `/releases/${releaseId}/audit-events`);
-      } catch (e: any) {
-        return this.handleFailure(`/releases/${releaseId}/audit-events`, e, () => [
-          ...MOCK_AUDIT_EVENTS,
-        ]);
-      }
+    const res = await fetch(`${API_BASE}/releases/${encodeURIComponent(releaseId)}/audit-events`);
+    if (!res.ok) throw new BackendError(`Status ${res.status}`, res.status, `/releases/${releaseId}/audit-events`);
+    return (await res.json() as ApiAuditEvent[]).map(mapAuditEvent);
+  }
+
+  public async anchorRelease(releaseId: string): Promise<AuditReport> {
+    const endpoint = `/releases/${encodeURIComponent(releaseId)}/anchor`;
+    const res = await fetch(`${API_BASE}${endpoint}`, { method: 'POST' });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({})) as { detail?: string };
+      throw new BackendError(body.detail || `Status ${res.status}`, res.status, endpoint);
     }
-    return [...MOCK_AUDIT_EVENTS];
+    return mapAuditReport(await res.json() as ApiAuditReportResponse);
   }
 
   public async getPolicy(): Promise<QuorumPolicy> {

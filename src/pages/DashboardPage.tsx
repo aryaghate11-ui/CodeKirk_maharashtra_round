@@ -37,11 +37,12 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
     try {
       setLoading(true);
       setApiError(null);
-      const [rData, eData, sData] = await Promise.all([
+      await api.detectBackend();
+      const [rData, sData] = await Promise.all([
         api.getReleases(),
-        api.getAuditEvents('rel-hey-01'),
         api.getSystemStats(),
       ]);
+      const eData = rData[0] && api.isBackendAvailable() ? await api.getAuditEvents(rData[0].id) : [];
       setReleases(rData);
       setEvents(eData);
       setStats(sData);

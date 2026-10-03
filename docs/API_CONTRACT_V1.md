@@ -49,6 +49,29 @@ then reevaluates quorum and conflict rules. The v2 signed payload excludes API
 timestamps and release IDs so separately produced evidence can be transported
 to the verifier without first trusting that verifier.
 
+### `GET /api/v1/blockchain/status`
+
+Reports whether the configured Anvil RPC is reachable, its chain ID, the
+deployed `QuorumEvidence` address and its deployment transaction.
+
+### `POST /api/v1/releases/{release_id}/anchor`
+
+Freezes the current final evidence, hashes its canonical JSON and submits that
+SHA-256 to the configured contract. Pending releases cannot be anchored. The
+operation is idempotent for a release that already has a stored anchor.
+
+### `GET /api/v1/releases/{release_id}/audit-report`
+
+Downloads `quorum.audit-report.v1`. It includes the frozen evidence, public
+builder keys, signed payloads, signatures, policy, decision, hash-linked audit
+events, evidence SHA-256 and blockchain receipt. Private keys and artifact
+bytes are never included.
+
+### `GET /api/v1/releases/{release_id}/audit-events`
+
+Returns the release's ordered hash-linked event records, including its
+blockchain anchoring event when present.
+
 ### `POST /api/v1/demo/verify`
 
 Creates and evaluates a signed demonstration release.
@@ -98,6 +121,33 @@ Consumer decisions are:
 - `pending`: the hash may match, but there is not yet enough evidence.
 
 ## Frontend types
+
+## Configurable policies and security exercises
+
+`POST /api/v1/releases` also accepts `policy` and an optional full `recipe`.
+Recipe JSON must hash to `recipe_sha256` and match the release source/artifact.
+Policy fields: `mode` (`k-of-n`, `majority`, `all`), `threshold`,
+`expected_builders`, `minimum_operators`, `reject_on_conflict`.
+
+`POST /api/v1/releases/{release_id}/evaluate` accepts a policy and returns
+`release_id`, `policy`, `status`, `consensus_sha256`, `candidate_sha256`,
+`attestation_count`, `rules`, and `scope`. It logs the evaluation without
+overwriting the release's original policy.
+
+`GET /api/v1/releases/{release_id}/integrity` returns `valid`, `trusted`,
+`checks`, `errors`, `warning`, `scope`, and `report_public_key`. Trust here is
+relative to this backend's local key, not an independent external checkpoint.
+
+`POST /api/v1/attack-lab/run` takes `scenario` and optional `policy`. The response
+contains `scenario`, `passed`, `observed_rejections`, `report_check`,
+`verification`, and `evidence_mode`. See `STEPS_5_8.md` for all eight scenarios.
+
+Audit reports additionally contain `report_signature` (`algorithm`, `public_key`,
+`signature`). It signs canonical JSON of every top-level field except
+`report_signature`. Offline consumers must pin a report public key obtained
+independently to treat a report as trusted.
+
+## Frontend mapping
 
 Wire-format interfaces live in `src/types/api.ts`. Mapping into the existing UI
 model is kept in `src/services/api.ts`, which prevents backend naming details

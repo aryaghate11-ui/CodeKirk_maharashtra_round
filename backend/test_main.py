@@ -9,6 +9,7 @@ os.environ["QUORUM_DB_PATH"] = str(Path(tempfile.gettempdir()) / "quorum-test.db
 
 from backend import main  # noqa: E402
 from builder import agent  # noqa: E402
+from scripts.verify_audit_report import verify_report  # noqa: E402
 
 
 class QuorumDecisionTests(unittest.TestCase):
@@ -219,6 +220,29 @@ class QuorumDecisionTests(unittest.TestCase):
         )
         self.assertNotIn("release_id", payload)
         self.assertNotIn("built_at", payload)
+
+    def test_audit_report_verifies_offline(self):
+        verification = main.run_demo_verification(
+            "valid", threshold=2, reject_on_conflict=True
+        )
+        report = main.generate_audit_report(verification["release_id"])
+        result = verify_report(report)
+        self.assertTrue(result["valid"])
+        self.assertTrue(result["checks"]["evidence_sha256"])
+        self.assertTrue(result["checks"]["builder_signatures"])
+        self.assertTrue(result["checks"]["audit_hash_chain"])
+        self.assertTrue(result["checks"]["quorum_decision"])
+        self.assertFalse(report["blockchain"]["anchored"])
+
+    def test_offline_verifier_detects_report_tampering(self):
+        verification = main.run_demo_verification(
+            "valid", threshold=2, reject_on_conflict=True
+        )
+        report = main.generate_audit_report(verification["release_id"])
+        report["evidence"]["builders"][0]["artifact_sha256"] = main.BAD_ARTIFACT_SHA256
+        result = verify_report(report)
+        self.assertFalse(result["valid"])
+        self.assertFalse(result["checks"]["integrity"])
 
 
 if __name__ == "__main__":
