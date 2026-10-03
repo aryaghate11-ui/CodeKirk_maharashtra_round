@@ -24,7 +24,7 @@ export const BuilderEvidenceTable: React.FC<BuilderEvidenceTableProps> = ({
             <th className="py-3 px-4 font-semibold">Builder & Node</th>
             <th className="py-3 px-4 font-semibold">Operator Address</th>
             <th className="py-3 px-4 font-semibold">Reproduced Artifact Hash (SHA-256)</th>
-            <th className="py-3 px-4 font-semibold">ECDSA Signature</th>
+            <th className="py-3 px-4 font-semibold">Ed25519 Signature</th>
             <th className="py-3 px-4 font-semibold text-right">Status</th>
           </tr>
         </thead>
@@ -143,7 +143,7 @@ export const BuilderEvidenceTable: React.FC<BuilderEvidenceTableProps> = ({
                     >
                       ({truncateHash(att.signature, 4, 3)})
                     </span>
-                    <CopyButton text={att.signature} title="Copy ECDSA signature" />
+                    <CopyButton text={att.signature} title="Copy Ed25519 signature" />
                   </div>
                 </td>
 

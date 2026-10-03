@@ -9,7 +9,7 @@ interface VerificationProgressModalProps {
 
 const VERIFICATION_STEPS = [
   'Checking builder attestations...',
-  'Verifying secp256k1 cryptographic signatures...',
+  'Verifying Ed25519 cryptographic signatures...',
   'Comparing reproduced artifact SHA-256 digests...',
   'Evaluating configured k-of-n quorum policy...',
   'Finalizing consensus state and anchoring audit proof...',

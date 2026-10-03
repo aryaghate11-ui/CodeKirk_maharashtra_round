@@ -75,6 +75,58 @@ class QuorumDecisionTests(unittest.TestCase):
             main.submit_attestation(created["id"], tampered)
         self.assertEqual(error.exception.status_code, 400)
 
+    def test_v1_contract_validates_demo_response(self):
+        result = main.run_demo_verification(
+            "valid", threshold=2, reject_on_conflict=False
+        )
+        contract = main.VerificationResponse.model_validate(result)
+        self.assertEqual(contract.schema_version, "quorum.api.v1")
+        self.assertEqual(contract.status, "verified")
+        self.assertEqual(len(contract.builders), 3)
+
+    def test_v1_stats_report_real_database_counts(self):
+        main.run_demo_verification("valid", threshold=2, reject_on_conflict=False)
+        stats = main.SystemStatsResponse.model_validate(main.get_system_stats())
+        self.assertEqual(stats.releases_verified, 1)
+        self.assertEqual(stats.active_builders, 3)
+
+    def test_three_of_three_policy_rejects_a_conflicting_build(self):
+        result = main.run_demo_verification(
+            "conflict", threshold=3, reject_on_conflict=False
+        )
+        self.assertEqual(result["status"], "rejected")
+        self.assertFalse(result["rules"]["matches"])
+
+    def test_consumer_artifact_matching_consensus_is_accepted(self):
+        verification = main.run_demo_verification(
+            "valid", threshold=2, reject_on_conflict=False
+        )
+        result = main.verify_consumer_artifact(
+            verification["release_id"],
+            main.ConsumerArtifactRequest(
+                artifact_name="downloaded-hey",
+                artifact_sha256=verification["consensus_sha256"],
+            ),
+        )
+        self.assertEqual(result["decision"], "accepted")
+        self.assertTrue(result["hash_matches"])
+
+    def test_consumer_artifact_mismatch_is_rejected_and_audited(self):
+        verification = main.run_demo_verification(
+            "valid", threshold=2, reject_on_conflict=False
+        )
+        result = main.verify_consumer_artifact(
+            verification["release_id"],
+            main.ConsumerArtifactRequest(
+                artifact_name="tampered-hey",
+                artifact_sha256=main.BAD_ARTIFACT_SHA256,
+            ),
+        )
+        self.assertEqual(result["decision"], "rejected")
+        self.assertFalse(result["hash_matches"])
+        record = main.get_release_record(verification["release_id"])
+        self.assertEqual(record["audit_events"][-1]["event_type"], "consumer.artifact.verified")
+
 
 if __name__ == "__main__":
     unittest.main()

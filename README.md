@@ -23,18 +23,24 @@ The SQLite database is created at `backend/data/quorum.db` and is intentionally 
 - Configurable two-of-three quorum policy
 - Hash-chained audit events
 - Valid, tampered and builder-conflict demonstrations
+- Versioned API contract shared by the FastAPI backend and React frontend
+- Consumer-side SHA-256 hashing (the selected file never leaves the browser)
 - Static fallback mode for the hosted dashboard
 
 The demo builder keys are deterministic and exist only to demonstrate the end-to-end signature flow. Real builders must use separately generated private keys stored outside the repository.
 
-## API
+## API v1
 
-- `GET /api/health`
-- `POST /api/releases`
-- `POST /api/releases/{release_id}/attestations`
-- `GET /api/releases/{release_id}`
-- `POST /api/demo/verify`
+- `GET /api/v1/health`
+- `GET /api/v1/stats`
+- `POST /api/v1/demo/verify`
+- `GET /api/v1/releases`
+- `GET /api/v1/releases/{release_id}`
+- `POST /api/v1/releases/{release_id}/consumer-verifications`
 - Interactive API documentation: `/docs`
+
+The older unversioned `/api/*` routes remain available for compatibility. The
+v1 request and response contract is documented in `docs/API_CONTRACT_V1.md`.
 
 ## Test
 

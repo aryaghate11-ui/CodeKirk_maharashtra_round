@@ -8,7 +8,14 @@ import {
   AuditEvent,
   SystemStats,
   ScenarioId,
+  ConsumerArtifactVerification,
 } from '../types';
+import {
+  ApiConsumerArtifactResponse,
+  ApiSystemStatsResponse,
+  ApiVerificationResponse,
+  ApiVerificationStatus,
+} from '../types/api';
 import {
   MOCK_BUILDERS,
   MOCK_RELEASES,
@@ -23,11 +30,132 @@ import {
   generateAuditReport,
 } from '../mock/auditData';
 
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+const API_BASE = import.meta.env.VITE_API_URL || '/api/v1';
 // If VITE_DISABLE_MOCK=true or VITE_STRICT_BACKEND=true, fallback to mock data is strictly disabled
 const ENV_STRICT =
   import.meta.env.VITE_DISABLE_MOCK === 'true' ||
   import.meta.env.VITE_STRICT_BACKEND === 'true';
+
+const decisionFromStatus = (status: ApiVerificationStatus): VerificationResult['decision'] => ({
+  verified: 'ACCEPTED',
+  rejected: 'REJECTED',
+  disagreement: 'CONFLICT',
+  pending: 'PENDING',
+}[status] as VerificationResult['decision']);
+
+const repositoryLabel = (url: string): string =>
+  url.replace(/^https?:\/\//, '').replace(/\/$/, '');
+
+const mapVerificationResponse = (
+  data: ApiVerificationResponse,
+  policyType: '2-of-3' | '3-of-3'
+): VerificationResult => {
+  const consensusHash = data.consensus_sha256;
+  const agreement = consensusHash
+    ? data.builders.filter((builder) => builder.artifact_sha256 === consensusHash).length
+    : 0;
+  const totalBuilders = data.builders.length;
+  const decision = decisionFromStatus(data.status);
+  const policy: QuorumPolicy = {
+    type: 'k-of-n',
+    k: data.threshold,
+    n: totalBuilders,
+    description: `${policyType} signed builder quorum`,
+    strict: data.release.reject_on_conflict,
+    requireUniqueOperators: true,
+    timeoutSeconds: 300,
+  };
+  const repo = repositoryLabel(data.release.repository_url);
+  const packageName = repo.split('/').pop() || 'release';
+
+  const builders: Builder[] = data.builders.map((builder, index) => ({
+    id: builder.id,
+    name: builder.name,
+    shortCode: builder.name
+      .split(/\s+/)
+      .map((word) => word[0])
+      .join('')
+      .slice(0, 2)
+      .toUpperCase(),
+    operator: builder.operator,
+    address: `ed25519:${builder.signing_key_fingerprint}`,
+    environment: builder.environment,
+    os: builder.platform,
+    runtime: builder.attestation_schema,
+    region: `Builder ${index + 1}`,
+    status: 'ONLINE',
+    uptime: 100,
+    latestAttestationTime: builder.built_at,
+    lastArtifactHash: builder.artifact_sha256,
+    signatureStatus: builder.signature_valid ? 'VALID' : 'INVALID',
+    totalBuilds: 1,
+    agreementRate: builder.artifact_sha256 === consensusHash ? 100 : 0,
+    verifiedByContract: false,
+  }));
+
+  const attestations: Attestation[] = data.builders.map((builder) => ({
+    id: builder.evidence_digest,
+    releaseId: data.release_id,
+    builderId: builder.id,
+    builderName: builder.name,
+    builderAddress: `ed25519:${builder.signing_key_fingerprint}`,
+    artifactHash: builder.artifact_sha256,
+    signature: builder.signature,
+    signatureValid: builder.signature_valid,
+    timestamp: builder.built_at,
+    status: !builder.signature_valid
+      ? 'INVALID_SIG'
+      : builder.artifact_sha256 === consensusHash
+        ? 'MATCH'
+        : 'CONFLICT',
+    environment: builder.environment,
+    buildDurationMs: 0,
+    logsAvailable: false,
+  }));
+
+  const explanation = data.status === 'verified'
+    ? `${agreement} of ${totalBuilders} signed builder results match the release artifact.`
+    : data.status === 'disagreement'
+      ? 'Trusted builders produced conflicting artifact hashes.'
+      : data.status === 'rejected'
+        ? 'The available signed evidence does not satisfy this release policy.'
+        : 'More independent signed evidence is required before this release can be trusted.';
+
+  return {
+    release: {
+      id: data.release_id,
+      name: packageName,
+      repo,
+      version: `commit ${data.release.source_commit.slice(0, 7)}`,
+      commit: data.release.source_commit,
+      artifactName: data.release.artifact_name,
+      target: 'linux / amd64',
+      createdAt: data.release.created_at,
+      publishedArtifactHash: data.candidate_sha256,
+      agreement,
+      totalBuilders,
+      policy,
+      status: decision,
+      decisionExplanation: explanation,
+    },
+    builders,
+    attestations,
+    agreement,
+    totalBuilders,
+    consensusHash,
+    conflictDetected: !data.rules.conflicts,
+    conflictingBuilders: data.builders
+      .filter((builder) => builder.artifact_sha256 !== consensusHash)
+      .map((builder) => builder.id),
+    policy,
+    policySatisfied: data.status === 'verified',
+    decision,
+    explanation,
+    signaturesValid: data.rules.signatures,
+    verifiedAt: data.audit_events[data.audit_events.length - 1]?.created_at || data.release.created_at,
+    auditChainHash: data.audit_chain_head || '',
+  };
+};
 
 export class BackendError extends Error {
   constructor(
@@ -56,7 +184,13 @@ class QuorumApiService {
       const start = performance.now();
       const res = await fetch(`${API_BASE}/health`, { signal: controller.signal });
       clearTimeout(timeoutId);
-      if (res.ok) {
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
+        const health = await res.json();
+        if (health.status !== 'ok' || health.api_version !== 'v1') {
+          this.backendAvailable = false;
+          return false;
+        }
         this.backendAvailable = true;
         this.lastPingMs = Math.round(performance.now() - start);
         return true;
@@ -97,13 +231,21 @@ class QuorumApiService {
   }
 
   public async getSystemStats(): Promise<SystemStats> {
-    if (!this.isMockMode() || this.strictBackendMode) {
+    const backendReady = this.backendAvailable || await this.detectBackend();
+    if (backendReady || this.strictBackendMode) {
       try {
         const res = await fetch(`${API_BASE}/stats`);
         if (res.ok) {
-          const data = await res.json();
+          const data = await res.json() as ApiSystemStatsResponse;
           return {
-            ...data,
+            releasesVerified: data.releases_verified,
+            releasesRejected: data.releases_rejected,
+            conflictsDetected: data.conflicts_detected,
+            activeBuilders: data.active_builders,
+            network: data.network,
+            contractAddress: data.contract_address,
+            consensusHealth: data.consensus_health,
+            averageVerificationTimeSeconds: data.average_verification_time_seconds,
             isBackendConnected: true,
             backendLatencyMs: this.lastPingMs,
           };
@@ -113,8 +255,8 @@ class QuorumApiService {
       } catch (e: any) {
         return this.handleFailure('/stats', e, () => ({
           ...MOCK_SYSTEM_STATS,
-          isBackendConnected: false,
-          backendLatencyMs: null,
+          isBackendConnected: this.backendAvailable,
+          backendLatencyMs: this.backendAvailable ? this.lastPingMs : null,
         }));
       }
     }
@@ -130,7 +272,13 @@ class QuorumApiService {
     if (!this.isMockMode() || this.strictBackendMode) {
       try {
         const res = await fetch(`${API_BASE}/releases`);
-        if (res.ok) return await res.json();
+        if (res.ok) {
+          const data = await res.json() as ApiVerificationResponse[];
+          return data.map((item) => mapVerificationResponse(
+            item,
+            item.threshold === 3 ? '3-of-3' : '2-of-3'
+          ).release);
+        }
         throw new BackendError(`Status ${res.status}`, res.status, '/releases');
       } catch (e: any) {
         return this.handleFailure('/releases', e, () => [...MOCK_RELEASES]);
@@ -144,7 +292,13 @@ class QuorumApiService {
     if (!this.isMockMode() || this.strictBackendMode) {
       try {
         const res = await fetch(`${API_BASE}/releases/${encodeURIComponent(id)}`);
-        if (res.ok) return await res.json();
+        if (res.ok) {
+          const data = await res.json() as ApiVerificationResponse;
+          return mapVerificationResponse(
+            data,
+            data.threshold === 3 ? '3-of-3' : '2-of-3'
+          ).release;
+        }
         throw new BackendError(`Status ${res.status}`, res.status, `/releases/${id}`);
       } catch (e: any) {
         return this.handleFailure(`/releases/${id}`, e, () => {
@@ -276,24 +430,69 @@ class QuorumApiService {
     policyType: '2-of-3' | '3-of-3' = '2-of-3',
     releaseId: string = 'rel-hey-01'
   ): Promise<VerificationResult> {
-    if (!this.isMockMode() || this.strictBackendMode) {
+    const backendReady = this.backendAvailable || await this.detectBackend();
+    const backendScenario = scenarioId === 'valid' || scenarioId === 'conflict' || scenarioId === 'tampered';
+    if ((backendReady || this.strictBackendMode) && backendScenario) {
       try {
-        const res = await fetch(
-          `${API_BASE}/demo/${encodeURIComponent(scenarioId)}?policy=${policyType}&releaseId=${encodeURIComponent(releaseId)}`,
-          {
-            method: 'POST',
-          }
-        );
-        if (res.ok) return await res.json();
-        throw new BackendError(`Status ${res.status}`, res.status, `/demo/${scenarioId}`);
+        const res = await fetch(`${API_BASE}/demo/verify`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ scenario: scenarioId, policy: policyType }),
+        });
+        if (res.ok) {
+          const data = await res.json() as ApiVerificationResponse;
+          return mapVerificationResponse(data, policyType);
+        }
+        throw new BackendError(`Status ${res.status}`, res.status, '/demo/verify');
       } catch (e: any) {
-        return this.handleFailure(`/demo/${scenarioId}`, e, () =>
+        return this.handleFailure('/demo/verify', e, () =>
           getMockVerificationForScenario(scenarioId, policyType, releaseId)
         );
       }
     }
 
     return getMockVerificationForScenario(scenarioId, policyType, releaseId);
+  }
+
+  public async verifyConsumerArtifact(
+    releaseId: string,
+    artifactName: string,
+    artifactSha256: string
+  ): Promise<ConsumerArtifactVerification> {
+    const backendReady = this.backendAvailable || await this.detectBackend();
+    const endpoint = `/releases/${encodeURIComponent(releaseId)}/consumer-verifications`;
+    if (!backendReady) {
+      throw new BackendError(
+        'The FastAPI verifier must be connected before a local artifact can be checked.',
+        undefined,
+        endpoint
+      );
+    }
+
+    const res = await fetch(`${API_BASE}${endpoint}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        artifact_name: artifactName,
+        artifact_sha256: artifactSha256,
+      }),
+    });
+    if (!res.ok) {
+      throw new BackendError(`Status ${res.status}`, res.status, endpoint);
+    }
+    const data = await res.json() as ApiConsumerArtifactResponse;
+    return {
+      releaseId: data.release_id,
+      artifactName: data.artifact_name,
+      artifactSha256: data.artifact_sha256,
+      consensusSha256: data.consensus_sha256,
+      hashMatches: data.hash_matches,
+      quorumStatus: data.quorum_status,
+      decision: data.decision,
+      reason: data.reason,
+      verifiedAt: data.verified_at,
+      auditChainHash: data.audit_chain_head,
+    };
   }
 }
 

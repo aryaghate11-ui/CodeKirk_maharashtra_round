@@ -6,6 +6,7 @@ import { BuilderEvidenceTable } from '../components/verification/BuilderEvidence
 import { QuorumSummaryCard } from '../components/verification/QuorumSummaryCard';
 import { WhyDecisionCard } from '../components/verification/WhyDecisionCard';
 import { VerificationProgressModal } from '../components/verification/VerificationProgressModal';
+import { ArtifactHashVerifier } from '../components/verification/ArtifactHashVerifier';
 import { ApiErrorBanner } from '../components/common/ApiErrorBanner';
 import { VerificationResult, ScenarioId, Release } from '../types';
 import { api } from '../services/api';
@@ -267,6 +268,11 @@ export const ReleaseVerificationPage: React.FC<ReleaseVerificationPageProps> = (
           </div>
         </div>
       </Card>
+
+      <ArtifactHashVerifier
+        releaseId={release.id}
+        consensusHash={consensusHash}
+      />
 
       {/* Main Evidence Grid: Builder Evidence Table (Full width or split) */}
       <Card>

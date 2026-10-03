@@ -189,6 +189,109 @@ class DemoRequest(BaseModel):
     scenario: Literal["valid", "tampered", "conflict"] = "valid"
 
 
+class DemoVerificationRequest(BaseModel):
+    scenario: Literal["valid", "tampered", "conflict"] = "valid"
+    policy: Literal["2-of-3", "3-of-3"] = "2-of-3"
+
+
+class ConsumerArtifactRequest(BaseModel):
+    artifact_name: str = Field(min_length=1, max_length=255)
+    artifact_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class VerificationRulesResponse(BaseModel):
+    signatures: bool
+    matches: bool
+    operators: bool
+    candidate: bool
+    conflicts: bool
+
+
+class BuilderEvidenceResponse(BaseModel):
+    id: str
+    name: str
+    operator: str
+    platform: str
+    artifact_sha256: str
+    signature_valid: bool
+    built_at: str
+    environment: str
+    attestation_schema: str
+    signing_key_fingerprint: str
+    signature: str
+    signed_payload: dict
+    evidence_digest: str
+
+
+class ReleaseRecordResponse(BaseModel):
+    id: str
+    repository_url: str
+    source_commit: str
+    artifact_name: str
+    recipe_sha256: str
+    candidate_sha256: str
+    threshold: int
+    reject_on_conflict: bool
+    status: str
+    consensus_sha256: str | None
+    created_at: str
+
+
+class AuditEventResponse(BaseModel):
+    event_type: str
+    event_json: str
+    previous_hash: str
+    event_hash: str
+    created_at: str
+
+
+class VerificationResponse(BaseModel):
+    schema_version: Literal["quorum.api.v1"] = "quorum.api.v1"
+    release_id: str
+    status: Literal["verified", "rejected", "disagreement", "pending"]
+    consensus_sha256: str | None
+    candidate_sha256: str
+    attestation_count: int
+    threshold: int
+    rules: VerificationRulesResponse
+    builders: list[BuilderEvidenceResponse]
+    audit_chain_head: str | None
+    release: ReleaseRecordResponse
+    audit_events: list[AuditEventResponse]
+
+
+class ConsumerArtifactResponse(BaseModel):
+    schema_version: Literal["quorum.api.v1"] = "quorum.api.v1"
+    release_id: str
+    artifact_name: str
+    artifact_sha256: str
+    consensus_sha256: str | None
+    hash_matches: bool
+    quorum_status: Literal["verified", "rejected", "disagreement", "pending"]
+    decision: Literal["accepted", "rejected", "conflict", "pending"]
+    reason: str
+    verified_at: str
+    audit_chain_head: str | None
+
+
+class HealthResponse(BaseModel):
+    status: Literal["ok"]
+    database: Literal["sqlite"]
+    mode: Literal["local"]
+    api_version: Literal["v1"] = "v1"
+
+
+class SystemStatsResponse(BaseModel):
+    releases_verified: int
+    releases_rejected: int
+    conflicts_detected: int
+    active_builders: int
+    network: str
+    contract_address: str
+    consensus_health: float
+    average_verification_time_seconds: float
+
+
 def create_release(data: ReleaseCreate) -> dict:
     release_id = str(uuid.uuid4())
     with connect() as db:
@@ -312,6 +415,10 @@ def evaluate_release(release_id: str) -> dict:
         candidate_matches = consensus_hash == release["candidate_sha256"] if consensus_hash else False
         signatures_valid = bool(rows) and all(row["signature_valid"] for row in rows)
 
+        expected_builders = db.execute(
+            "SELECT COUNT(*) AS count FROM builders WHERE trusted = 1"
+        ).fetchone()["count"]
+
         if len(rows) < release["threshold"]:
             status = "pending"
         elif has_conflict and release["reject_on_conflict"]:
@@ -320,6 +427,8 @@ def evaluate_release(release_id: str) -> dict:
             status = "rejected"
         elif matching >= release["threshold"] and distinct_operators >= release["threshold"]:
             status = "verified"
+        elif len(rows) >= expected_builders:
+            status = "rejected"
         else:
             status = "pending"
 
@@ -388,9 +497,123 @@ def get_release_record(release_id: str) -> dict:
             "SELECT event_type, event_json, previous_hash, event_hash, created_at FROM audit_events WHERE release_id = ? ORDER BY id",
             (release_id,),
         ).fetchall()
+    result["schema_version"] = "quorum.api.v1"
     result["release"] = dict(release)
     result["audit_events"] = [dict(event) for event in events]
     return result
+
+
+def run_demo_verification(
+    scenario: Literal["valid", "tampered", "conflict"],
+    *,
+    threshold: int = 2,
+    reject_on_conflict: bool = True,
+) -> dict:
+    candidate = BAD_ARTIFACT_SHA256 if scenario == "tampered" else GOOD_ARTIFACT_SHA256
+    created = create_release(
+        ReleaseCreate(
+            repository_url="https://github.com/rakyll/hey",
+            source_commit=DEMO_SOURCE_COMMIT,
+            artifact_name="hey-linux-amd64",
+            recipe_sha256=DEMO_RECIPE_SHA256,
+            candidate_sha256=candidate,
+            threshold=threshold,
+            reject_on_conflict=reject_on_conflict,
+        )
+    )
+    release_id = created["id"]
+    builders = [
+        ("northstar-ci", "GitHub Actions · Ubuntu 24.04"),
+        ("parallax-labs", "Podman · Debian 13"),
+        ("local-witness", "Self-hosted · Fedora 43"),
+    ]
+    for index, (builder_id, platform) in enumerate(builders):
+        artifact_hash = BAD_ARTIFACT_SHA256 if scenario == "conflict" and index == 2 else GOOD_ARTIFACT_SHA256
+        submit_attestation(release_id, sign_demo_attestation(release_id, builder_id, artifact_hash, platform))
+    return get_release_record(release_id)
+
+
+def verify_consumer_artifact(release_id: str, data: ConsumerArtifactRequest) -> dict:
+    verification = get_release_record(release_id)
+    consensus_hash = verification["consensus_sha256"]
+    hash_matches = consensus_hash is not None and data.artifact_sha256 == consensus_hash
+    release = verification["release"]
+
+    if consensus_hash is None:
+        decision = "pending"
+        reason = "No builder consensus is available yet."
+    elif not hash_matches:
+        decision = "rejected"
+        reason = "The selected file does not match the hash reproduced by the builders."
+    elif not verification["rules"]["conflicts"] and release["reject_on_conflict"]:
+        decision = "conflict"
+        reason = "The file matches the majority, but the active policy rejects builder disagreement."
+    elif verification["rules"]["matches"] and verification["rules"]["operators"]:
+        decision = "accepted"
+        reason = "The selected file matches the independently reproduced consensus hash."
+    else:
+        decision = "pending"
+        reason = "The file matches available evidence, but the quorum policy is not yet satisfied."
+
+    verified_at = utc_now()
+    with connect() as db:
+        chain_head = append_audit_event(
+            db,
+            release_id,
+            "consumer.artifact.verified",
+            {
+                "artifact_name": data.artifact_name,
+                "artifact_sha256": data.artifact_sha256,
+                "decision": decision,
+                "hash_matches": hash_matches,
+            },
+        )
+
+    return {
+        "schema_version": "quorum.api.v1",
+        "release_id": release_id,
+        "artifact_name": data.artifact_name,
+        "artifact_sha256": data.artifact_sha256,
+        "consensus_sha256": consensus_hash,
+        "hash_matches": hash_matches,
+        "quorum_status": verification["status"],
+        "decision": decision,
+        "reason": reason,
+        "verified_at": verified_at,
+        "audit_chain_head": chain_head,
+    }
+
+
+def get_system_stats() -> dict:
+    with connect() as db:
+        release_counts = {
+            row["status"]: row["count"]
+            for row in db.execute(
+                "SELECT status, COUNT(*) AS count FROM releases GROUP BY status"
+            ).fetchall()
+        }
+        active_builders = db.execute(
+            "SELECT COUNT(*) AS count FROM builders WHERE trusted = 1"
+        ).fetchone()["count"]
+    completed = sum(
+        release_counts.get(status, 0)
+        for status in ("verified", "rejected", "disagreement")
+    )
+    consensus_health = (
+        round(release_counts.get("verified", 0) * 100 / completed, 1)
+        if completed
+        else 100.0
+    )
+    return {
+        "releases_verified": release_counts.get("verified", 0),
+        "releases_rejected": release_counts.get("rejected", 0),
+        "conflicts_detected": release_counts.get("disagreement", 0),
+        "active_builders": active_builders,
+        "network": "Local verifier",
+        "contract_address": "Not configured",
+        "consensus_health": consensus_health,
+        "average_verification_time_seconds": 0.0,
+    }
 
 
 def sign_demo_attestation(release_id: str, builder_id: str, artifact_hash: str, platform: str) -> AttestationCreate:
@@ -417,7 +640,12 @@ async def lifespan(_: FastAPI):
 app = FastAPI(title="Quorum Verification API", version="0.1.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://127.0.0.1:8000", "http://localhost:8000"],
+    allow_origins=[
+        "http://127.0.0.1:8000",
+        "http://localhost:8000",
+        "http://127.0.0.1:5173",
+        "http://localhost:5173",
+    ],
     allow_methods=["GET", "POST"],
     allow_headers=["Content-Type"],
 )
@@ -425,7 +653,17 @@ app.add_middleware(
 
 @app.get("/api/health")
 def health() -> dict:
-    return {"status": "ok", "database": "sqlite", "mode": "local"}
+    return {"status": "ok", "database": "sqlite", "mode": "local", "api_version": "v1"}
+
+
+@app.get("/api/v1/health", response_model=HealthResponse)
+def health_v1() -> dict:
+    return health()
+
+
+@app.get("/api/v1/stats", response_model=SystemStatsResponse)
+def system_stats_v1() -> dict:
+    return get_system_stats()
 
 
 @app.post("/api/releases", status_code=201)
@@ -445,28 +683,42 @@ def release_details(release_id: str) -> dict:
 
 @app.post("/api/demo/verify")
 def demo_verify(data: DemoRequest) -> dict:
-    candidate = BAD_ARTIFACT_SHA256 if data.scenario == "tampered" else GOOD_ARTIFACT_SHA256
-    created = create_release(
-        ReleaseCreate(
-            repository_url="https://github.com/rakyll/hey",
-            source_commit=DEMO_SOURCE_COMMIT,
-            artifact_name="hey-linux-amd64",
-            recipe_sha256=DEMO_RECIPE_SHA256,
-            candidate_sha256=candidate,
-            threshold=2,
-            reject_on_conflict=True,
-        )
+    return run_demo_verification(data.scenario)
+
+
+@app.post("/api/v1/demo/verify", response_model=VerificationResponse)
+def demo_verify_v1(data: DemoVerificationRequest) -> dict:
+    threshold = 2 if data.policy == "2-of-3" else 3
+    return run_demo_verification(
+        data.scenario,
+        threshold=threshold,
+        reject_on_conflict=False,
     )
-    release_id = created["id"]
-    builders = [
-        ("northstar-ci", "GitHub Actions · Ubuntu 24.04"),
-        ("parallax-labs", "Podman · Debian 13"),
-        ("local-witness", "Self-hosted · Fedora 43"),
-    ]
-    for index, (builder_id, platform) in enumerate(builders):
-        artifact_hash = BAD_ARTIFACT_SHA256 if data.scenario == "conflict" and index == 2 else GOOD_ARTIFACT_SHA256
-        submit_attestation(release_id, sign_demo_attestation(release_id, builder_id, artifact_hash, platform))
+
+
+@app.get("/api/v1/releases", response_model=list[VerificationResponse])
+def list_releases_v1() -> list[dict]:
+    with connect() as db:
+        release_ids = [
+            row["id"]
+            for row in db.execute(
+                "SELECT id FROM releases ORDER BY created_at DESC, rowid DESC LIMIT 50"
+            ).fetchall()
+        ]
+    return [get_release_record(release_id) for release_id in release_ids]
+
+
+@app.get("/api/v1/releases/{release_id}", response_model=VerificationResponse)
+def release_details_v1(release_id: str) -> dict:
     return get_release_record(release_id)
+
+
+@app.post(
+    "/api/v1/releases/{release_id}/consumer-verifications",
+    response_model=ConsumerArtifactResponse,
+)
+def consumer_artifact_verification(release_id: str, data: ConsumerArtifactRequest) -> dict:
+    return verify_consumer_artifact(release_id, data)
 
 
 app.mount("/", StaticFiles(directory=ROOT / "dist", html=True), name="frontend")

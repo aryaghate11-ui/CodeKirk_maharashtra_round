@@ -55,7 +55,7 @@ export const WhyDecisionCard: React.FC<WhyDecisionCardProps> = ({ verification }
                   validSignatures ? 'text-quorum-green-light' : 'text-quorum-red-light'
                 }`}
               >
-                {validSignatures ? 'PASS (secp256k1 valid)' : 'FAIL (untrusted)'}
+                {validSignatures ? 'PASS (Ed25519 valid)' : 'FAIL (untrusted)'}
               </span>
             </div>
 
@@ -127,7 +127,7 @@ export const WhyDecisionCard: React.FC<WhyDecisionCardProps> = ({ verification }
         <div className="p-3 rounded-lg bg-brand-bg-deep/40 border border-brand-border/60 text-[11px] text-brand-muted flex items-start gap-2">
           <Shield className="w-4 h-4 text-brand-subtle flex-shrink-0 mt-0.5" />
           <span>
-            Computed by independent verification contract and SQLite state store. Frontend operates in read-only visualization mode.
+            Computed by the FastAPI quorum engine from signed builder evidence and the hash-chained SQLite audit record.
           </span>
         </div>
       </CardBody>

@@ -164,3 +164,16 @@ export interface SystemStats {
   isBackendConnected: boolean;
   backendLatencyMs: number | null;
 }
+
+export interface ConsumerArtifactVerification {
+  releaseId: string;
+  artifactName: string;
+  artifactSha256: string;
+  consensusSha256: string | null;
+  hashMatches: boolean;
+  quorumStatus: 'verified' | 'rejected' | 'disagreement' | 'pending';
+  decision: 'accepted' | 'rejected' | 'conflict' | 'pending';
+  reason: string;
+  verifiedAt: string;
+  auditChainHash: string | null;
+}

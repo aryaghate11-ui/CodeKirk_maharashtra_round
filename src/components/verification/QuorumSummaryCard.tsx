@@ -165,7 +165,9 @@ export const QuorumSummaryCard: React.FC<QuorumSummaryCardProps> = ({ verificati
         </div>
 
         <span className="text-[11px] font-mono opacity-80">
-          Anchored in Block #{verification.blockNumber || '5829104'}
+          {verification.blockNumber
+            ? `Anchored in Block #${verification.blockNumber}`
+            : 'Sealed in hash-chained audit history'}
         </span>
       </div>
     </Card>

@@ -131,15 +131,15 @@ export const TamperSimulator: React.FC<TamperSimulatorProps> = ({ scenario }) =>
             <div className="p-4 rounded-xl bg-brand-bg-deep border border-brand-border space-y-3">
               <div className="flex items-center justify-between p-2.5 rounded-lg bg-brand-panel-elevated/40 border border-brand-border text-xs">
                 <span className="font-mono text-white">Builder 01 (Northstar)</span>
-                <span className="font-mono text-quorum-green">ECDSA: VALID</span>
+                <span className="font-mono text-quorum-green">ED25519: VALID</span>
               </div>
               <div className="flex items-center justify-between p-2.5 rounded-lg bg-brand-panel-elevated/40 border border-brand-border text-xs">
                 <span className="font-mono text-white">Builder 02 (Parallax)</span>
-                <span className="font-mono text-quorum-green">ECDSA: VALID</span>
+                <span className="font-mono text-quorum-green">ED25519: VALID</span>
               </div>
               <div className="flex items-center justify-between p-2.5 rounded-lg bg-quorum-red-bg/40 border border-quorum-red-border text-xs">
                 <span className="font-mono text-white">Builder 03 (Untrusted Node)</span>
-                <span className="font-mono text-quorum-red font-bold">ECDSA: SIGNATURE INVALID</span>
+                <span className="font-mono text-quorum-red font-bold">ED25519: SIGNATURE INVALID</span>
               </div>
 
               <div className="p-2 text-[11px] font-mono text-quorum-red-light bg-quorum-red-bg/20 rounded border border-quorum-red-border/50 text-center">
