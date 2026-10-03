@@ -2,6 +2,7 @@ import React from 'react';
 import { Menu, Activity, ShieldCheck, Database, RefreshCw, Zap } from 'lucide-react';
 import { PageId } from './Sidebar';
 import { SystemStats } from '../../types';
+import { api } from '../../services/api';
 
 interface HeaderProps {
   currentPage: PageId;
@@ -91,10 +92,16 @@ export const Header: React.FC<HeaderProps> = ({
 
           {/* Backend Connection Badge */}
           <div
-            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs border border-brand-border bg-brand-panel/90 text-brand-muted"
+            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs border ${
+              api.isStrictBackendMode() && !stats?.isBackendConnected
+                ? 'border-quorum-red-border bg-quorum-red-bg/50 text-quorum-red-light'
+                : 'border-brand-border bg-brand-panel/90 text-brand-muted'
+            }`}
             title={
               stats?.isBackendConnected
-                ? `Connected to FastAPI Backend (Latency: ${stats.backendLatencyMs}ms)`
+                ? `Connected to FastAPI Backend at ${import.meta.env.VITE_API_URL || 'http://localhost:8000'} (Latency: ${stats.backendLatencyMs}ms)`
+                : api.isStrictBackendMode()
+                ? 'Strict Backend Mode: Mock fallback is disabled. Backend is currently offline.'
                 : 'Running in Self-Contained High-Fidelity Mock Mode (Ready for FastAPI integration)'
             }
           >
@@ -102,12 +109,28 @@ export const Header: React.FC<HeaderProps> = ({
             <span className="hidden sm:inline">Engine:</span>
             <span
               className={`font-mono text-[11px] font-medium ${
-                stats?.isBackendConnected ? 'text-quorum-green' : 'text-brand-text'
+                stats?.isBackendConnected
+                  ? 'text-quorum-green'
+                  : api.isStrictBackendMode()
+                  ? 'text-quorum-red-light font-bold'
+                  : 'text-brand-text'
               }`}
             >
-              {stats?.isBackendConnected ? 'FastAPI Live' : 'Verified Mock'}
+              {stats?.isBackendConnected
+                ? 'FastAPI Live'
+                : api.isStrictBackendMode()
+                ? 'FastAPI Offline (Strict)'
+                : 'Verified Mock'}
             </span>
-            <span className="w-1.5 h-1.5 rounded-full bg-quorum-green animate-pulse" />
+            <span
+              className={`w-1.5 h-1.5 rounded-full ${
+                stats?.isBackendConnected
+                  ? 'bg-quorum-green animate-pulse'
+                  : api.isStrictBackendMode()
+                  ? 'bg-quorum-red animate-ping'
+                  : 'bg-quorum-amber'
+              }`}
+            />
           </div>
 
           {/* Network Indicator */}

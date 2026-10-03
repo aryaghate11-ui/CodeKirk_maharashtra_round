@@ -6,6 +6,7 @@ import { BuilderEvidenceTable } from '../components/verification/BuilderEvidence
 import { QuorumSummaryCard } from '../components/verification/QuorumSummaryCard';
 import { WhyDecisionCard } from '../components/verification/WhyDecisionCard';
 import { VerificationProgressModal } from '../components/verification/VerificationProgressModal';
+import { ApiErrorBanner } from '../components/common/ApiErrorBanner';
 import { VerificationResult, ScenarioId, Release } from '../types';
 import { api } from '../services/api';
 import { truncateHash } from '../lib/utils';
@@ -31,6 +32,7 @@ export const ReleaseVerificationPage: React.FC<ReleaseVerificationPageProps> = (
   const [activePolicyType, setActivePolicyType] = useState<'2-of-3' | '3-of-3'>('2-of-3');
   const [verification, setVerification] = useState<VerificationResult | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [apiError, setApiError] = useState<Error | string | null>(null);
   const [isVerifyingModalOpen, setIsVerifyingModalOpen] = useState(false);
   const [allReleases, setAllReleases] = useState<Release[]>([]);
   const [selectedRelId, setSelectedRelId] = useState(selectedReleaseId);
@@ -47,18 +49,22 @@ export const ReleaseVerificationPage: React.FC<ReleaseVerificationPageProps> = (
     relId: string = selectedRelId
   ) => {
     setIsLoading(true);
+    setApiError(null);
     try {
       const data = await api.runDemoScenario(scenario, policy, relId);
       setVerification(data);
-    } catch (err) {
+    } catch (err: any) {
       console.error('Failed to run verification', err);
+      setApiError(err);
     } finally {
       setIsLoading(false);
     }
   };
 
   useEffect(() => {
-    api.getReleases().then(setAllReleases);
+    api.getReleases()
+      .then(setAllReleases)
+      .catch((err) => console.warn('Could not fetch releases list', err));
   }, []);
 
   useEffect(() => {
@@ -76,10 +82,25 @@ export const ReleaseVerificationPage: React.FC<ReleaseVerificationPageProps> = (
 
   if (!verification) {
     return (
-      <div className="flex items-center justify-center min-h-[400px]">
-        <div className="text-center space-y-3">
-          <div className="w-8 h-8 rounded-full border-2 border-quorum-green border-t-transparent animate-spin mx-auto" />
-          <p className="text-xs font-mono text-brand-muted">Loading verification telemetry...</p>
+      <div className="space-y-6">
+        {apiError && (
+          <ApiErrorBanner
+            error={apiError}
+            endpoint="/demo or /verify"
+            onRetry={() => loadVerification(currentScenario, activePolicyType, selectedRelId)}
+          />
+        )}
+        <div className="flex items-center justify-center min-h-[350px]">
+          <div className="text-center space-y-3">
+            {isLoading ? (
+              <>
+                <div className="w-8 h-8 rounded-full border-2 border-quorum-green border-t-transparent animate-spin mx-auto" />
+                <p className="text-xs font-mono text-brand-muted">Connecting to verifier...</p>
+              </>
+            ) : (
+              <p className="text-xs font-mono text-quorum-red-light">Verification engine unreachable.</p>
+            )}
+          </div>
         </div>
       </div>
     );
@@ -89,6 +110,13 @@ export const ReleaseVerificationPage: React.FC<ReleaseVerificationPageProps> = (
 
   return (
     <div className="space-y-6">
+      {apiError && (
+        <ApiErrorBanner
+          error={apiError}
+          endpoint="/demo or /verify"
+          onRetry={() => loadVerification(currentScenario, activePolicyType, selectedRelId)}
+        />
+      )}
       {/* Primary Verification Header Card */}
       <Card className="border-brand-border-bright shadow-panel">
         <div className="p-6 space-y-6">

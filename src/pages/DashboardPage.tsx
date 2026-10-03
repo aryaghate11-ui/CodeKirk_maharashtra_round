@@ -3,6 +3,7 @@ import { Card, CardHeader, CardBody } from '../components/common/Card';
 import { MetricCard } from '../components/dashboard/MetricCard';
 import { RecentReleasesTable } from '../components/dashboard/RecentReleasesTable';
 import { ActivityTimeline } from '../components/dashboard/ActivityTimeline';
+import { ApiErrorBanner } from '../components/common/ApiErrorBanner';
 import { Release, SystemStats, AuditEvent } from '../types';
 import { api } from '../services/api';
 import {
@@ -30,10 +31,12 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
   const [events, setEvents] = useState<AuditEvent[]>([]);
   const [stats, setStats] = useState<SystemStats | null>(null);
   const [loading, setLoading] = useState(true);
+  const [apiError, setApiError] = useState<Error | string | null>(null);
 
   const loadData = async () => {
     try {
       setLoading(true);
+      setApiError(null);
       const [rData, eData, sData] = await Promise.all([
         api.getReleases(),
         api.getAuditEvents('rel-hey-01'),
@@ -42,8 +45,9 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
       setReleases(rData);
       setEvents(eData);
       setStats(sData);
-    } catch (err) {
+    } catch (err: any) {
       console.error('Failed to load dashboard data', err);
+      setApiError(err);
     } finally {
       setLoading(false);
     }
@@ -55,6 +59,13 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
 
   return (
     <div className="space-y-8">
+      {apiError && (
+        <ApiErrorBanner
+          error={apiError}
+          endpoint="/releases or /stats"
+          onRetry={loadData}
+        />
+      )}
       {/* Hero Technical Value Proposition Banner */}
       <div className="p-6 rounded-2xl bg-gradient-to-r from-brand-panel via-brand-panel-elevated to-brand-panel border border-brand-border-bright/70 shadow-panel relative overflow-hidden">
         <div className="relative z-10 flex flex-col md:flex-row md:items-center justify-between gap-6">
