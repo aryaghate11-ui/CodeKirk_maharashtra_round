@@ -125,6 +125,20 @@ class IndependentCiBuilderFlowTests(unittest.TestCase):
         builders = main.list_builders(runtime_only=True)
         self.assertEqual({builder["id"] for builder in builders}, set(main.RUNTIME_BUILDER_IDS))
 
+    def test_builder_build_history_exposes_real_attested_output(self):
+        release_id = self.create_release()
+        main.submit_attestation(
+            release_id,
+            self.attestation(release_id, self.configs[0], main.GOOD_ARTIFACT_SHA256),
+        )
+        builds = main.list_builder_builds("local-builder")
+        self.assertEqual(len(builds), 1)
+        self.assertEqual(builds[0]["artifact_name"], "hey-linux-amd64")
+        self.assertEqual(builds[0]["artifact_sha256"], main.GOOD_ARTIFACT_SHA256)
+        self.assertTrue(builds[0]["signature_valid"])
+        self.assertTrue(builds[0]["matches_candidate"])
+        self.assertEqual(len(builds[0]["evidence_digest"]), 64)
+
     def test_all_profiles_accept_the_same_release_challenge(self):
         release_id = str(uuid.uuid4())
         root = Path(__file__).resolve().parents[1]

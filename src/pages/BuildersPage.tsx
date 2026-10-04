@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { BuilderCard } from '../components/builders/BuilderCard';
+import { BuilderBuildHistory } from '../components/builders/BuilderBuildHistory';
 import { BuilderDiversityWidget } from '../components/builders/BuilderDiversityWidget';
-import { Builder } from '../types';
+import { Builder, BuilderBuild } from '../types';
 import { api } from '../services/api';
 import { Server, ShieldCheck, AlertCircle } from 'lucide-react';
 import { ApiErrorBanner } from '../components/common/ApiErrorBanner';
@@ -9,6 +10,7 @@ import { ApiErrorBanner } from '../components/common/ApiErrorBanner';
 export const BuildersPage: React.FC = () => {
   const [builders, setBuilders] = useState<Builder[]>([]);
   const [loading, setLoading] = useState(true);
+  const [builds, setBuilds] = useState<Record<string, BuilderBuild[]>>({});
   const [apiError, setApiError] = useState<Error | string | null>(null);
 
   const loadBuilders = async () => {
@@ -17,6 +19,10 @@ export const BuildersPage: React.FC = () => {
     try {
       const data = await api.getBuilders();
       setBuilders(data);
+      const buildEntries = await Promise.all(
+        data.map(async (builder) => [builder.id, await api.getBuilderBuilds(builder.id)] as const)
+      );
+      setBuilds(Object.fromEntries(buildEntries));
     } catch (err: any) {
       console.error('Failed to load builders', err);
       setApiError(err);
@@ -73,6 +79,21 @@ export const BuildersPage: React.FC = () => {
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         {builders.map((builder, idx) => (
           <BuilderCard key={builder.id} builder={builder} index={idx} />
+        ))}
+      </div>
+
+      <div className="space-y-3">
+        <div>
+          <h3 className="text-sm font-bold text-white tracking-tight">What each builder produced</h3>
+          <p className="text-xs text-brand-muted mt-0.5">Real artifact names, hashes, source commits, signatures, and consensus comparisons returned by FastAPI.</p>
+        </div>
+        {builders.map((builder) => (
+          <BuilderBuildHistory
+            key={builder.id}
+            builder={builder}
+            builds={builds[builder.id] || []}
+            loading={loading}
+          />
         ))}
       </div>
 

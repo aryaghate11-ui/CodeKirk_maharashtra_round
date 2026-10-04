@@ -9,6 +9,7 @@ import {
   SystemStats,
   ConsumerArtifactVerification,
   ReleaseTrustSummary,
+  BuilderBuild,
 } from '../types';
 import {
   ApiConsumerArtifactResponse,
@@ -19,6 +20,7 @@ import {
   ApiVerificationResponse,
   ApiVerificationStatus,
   ApiReleaseTrustSummaryResponse,
+  ApiBuilderBuildResponse,
 } from '../types/api';
 import {
   FixtureItem,
@@ -71,7 +73,7 @@ const mapVerificationResponse = (
   const agreement = consensusHash
     ? data.builders.filter((builder) => builder.artifact_sha256 === consensusHash).length
     : 0;
-  const totalBuilders = data.release.expected_builders;
+  const totalBuilders = data.release.expected_builders || 3;
   const decision = decisionFromStatus(data.status);
   const policy: QuorumPolicy = {
     type: 'k-of-n',
@@ -85,59 +87,69 @@ const mapVerificationResponse = (
   const repo = repositoryLabel(data.release.repository_url);
   const packageName = repo.split('/').pop() || 'release';
 
-  const builders: Builder[] = data.builders.map((builder, index) => ({
-    id: builder.id,
-    name: builder.name,
-    shortCode: builder.name
-      .split(/\s+/)
-      .map((word) => word[0])
-      .join('')
-      .slice(0, 2)
-      .toUpperCase(),
-    operator: builder.operator,
-    address: `ed25519:${builder.signing_key_fingerprint}`,
-    environment: builder.environment,
-    os: builder.platform,
-    runtime: builder.attestation_schema,
-    region: `Builder ${index + 1}`,
-    status: 'ATTESTED',
-    trusted: true,
-    uptime: null,
-    latestAttestationTime: builder.built_at,
-    lastArtifactHash: builder.artifact_sha256,
-    signatureStatus: builder.signature_valid ? 'VALID' : 'INVALID',
-    livenessStatus: 'UNKNOWN',
-    deploymentClass: builder.id === 'github-actions' || builder.id === 'gitlab-ci'
-      ? 'HOSTED_RUNNER'
-      : 'LOCAL_ISOLATED',
-    independenceVerified: false,
-    independenceEvidence: builder.id === 'local-builder'
-      ? 'Evidence was signed by the registered local builder key.'
-      : 'Evidence was signed by the registered hosted CI builder key.',
-    totalBuilds: 1,
-    agreementRate: builder.artifact_sha256 === consensusHash ? 100 : 0,
-    verifiedByContract: false,
-  }));
+  // Only evidence returned by the backend is represented as a builder result.
+  // Missing submissions are expressed by expected_builders minus this list,
+  // never by manufacturing placeholder builders or attestations.
+  const builders: Builder[] = data.builders.map((builder, index) => {
+    return {
+      id: builder.id,
+      name: builder.name,
+      shortCode: builder.name
+        .split(/\s+/)
+        .map((word) => word[0])
+        .join('')
+        .slice(0, 2)
+        .toUpperCase(),
+      operator: builder.operator,
+      address: `ed25519:${builder.signing_key_fingerprint}`,
+      environment: builder.environment,
+      os: builder.platform,
+      runtime: builder.attestation_schema,
+      region: `Builder ${index + 1}`,
+      status: 'ATTESTED',
+      trusted: true,
+      uptime: null,
+      latestAttestationTime: builder.built_at,
+      lastArtifactHash: builder.artifact_sha256,
+      signatureStatus: builder.signature_valid ? 'VALID' : 'INVALID',
+      livenessStatus: 'UNKNOWN',
+      deploymentClass: builder.id === 'github-actions' || builder.id === 'gitlab-ci'
+        ? 'HOSTED_RUNNER'
+        : 'LOCAL_ISOLATED',
+      independenceVerified: false,
+      independenceEvidence: builder.id === 'local-builder'
+        ? 'Evidence was signed by the registered local builder key.'
+        : 'Evidence was signed by the registered hosted CI builder key.',
+      totalBuilds: 1,
+      agreementRate: builder.artifact_sha256 === consensusHash ? 100 : 0,
+      verifiedByContract: false,
+    };
+  });
 
-  const attestations: Attestation[] = data.builders.map((builder) => ({
-    id: builder.evidence_digest,
-    releaseId: data.release_id,
-    builderId: builder.id,
-    builderName: builder.name,
-    builderAddress: `ed25519:${builder.signing_key_fingerprint}`,
-    artifactHash: builder.artifact_sha256,
-    signature: builder.signature,
-    signatureValid: builder.signature_valid,
-    timestamp: builder.built_at,
-    status: !builder.signature_valid
-      ? 'INVALID_SIG'
-      : builder.artifact_sha256 === consensusHash
+  const attestations: Attestation[] = data.builders.map((builder) => {
+    const isMatch = builder.signature_valid && builder.artifact_sha256 === consensusHash;
+    const isInvalidSig = !builder.signature_valid;
+
+    return {
+      id: builder.evidence_digest,
+      releaseId: data.release_id,
+      builderId: builder.id,
+      builderName: builder.name,
+      builderAddress: `ed25519:${builder.signing_key_fingerprint}`,
+      artifactHash: builder.artifact_sha256,
+      signature: builder.signature,
+      signatureValid: builder.signature_valid,
+      timestamp: builder.built_at,
+      status: isInvalidSig
+        ? 'INVALID_SIG'
+        : isMatch
         ? 'MATCH'
         : 'CONFLICT',
-    environment: builder.environment,
-    buildDurationMs: 0,
-    logsAvailable: false,
-  }));
+      environment: builder.environment,
+      buildDurationMs: 0,
+      logsAvailable: false,
+    };
+  });
 
   const explanation = data.status === 'verified'
     ? `${agreement} of ${totalBuilders} signed builder results match the release artifact.`
@@ -365,6 +377,7 @@ class QuorumApiService {
   public lockAdmin(): void {
     this.adminToken = '';
     if (typeof window !== 'undefined') sessionStorage.removeItem('quorum-admin-token');
+    if (typeof window !== 'undefined') window.dispatchEvent(new Event('quorum-admin-change'));
   }
 
   public async unlockAdmin(token: string): Promise<void> {
@@ -376,6 +389,26 @@ class QuorumApiService {
     if (!res.ok) throw new BackendError('Invalid administrator token.', res.status, '/auth/verify');
     this.adminToken = cleanToken;
     if (typeof window !== 'undefined') sessionStorage.setItem('quorum-admin-token', cleanToken);
+    if (typeof window !== 'undefined') window.dispatchEvent(new Event('quorum-admin-change'));
+  }
+
+  private async requiredAdminHeaders(includeJson = false): Promise<Record<string, string>> {
+    if (!this.adminToken && typeof window !== 'undefined') {
+      const token = window.prompt(
+        'This security action requires administrator authorization. Enter the Quorum admin token printed in the backend terminal:'
+      );
+      if (token?.trim()) await this.unlockAdmin(token);
+    }
+    if (!this.adminToken) {
+      throw new BackendError(
+        'Administrator authorization is required for this action. Use “Admin locked” in the header and enter the token printed by the backend.',
+        401,
+      );
+    }
+    return {
+      ...(includeJson ? { 'Content-Type': 'application/json' } : {}),
+      ...this.adminHeaders(),
+    };
   }
 
   public isMockMode(): boolean {
@@ -492,6 +525,29 @@ class QuorumApiService {
           }));
   }
 
+  public async getBuilderBuilds(builderId: string): Promise<BuilderBuild[]> {
+    const endpoint = `/builders/${encodeURIComponent(builderId)}/builds`;
+    const res = await fetch(`${API_BASE}${endpoint}`);
+    if (!res.ok) throw new BackendError(`Status ${res.status}: Failed to load builder outputs`, res.status, endpoint);
+    return (await res.json() as ApiBuilderBuildResponse[]).map((build) => ({
+      releaseId: build.release_id,
+      repositoryUrl: build.repository_url,
+      sourceCommit: build.source_commit,
+      artifactName: build.artifact_name,
+      artifactSha256: build.artifact_sha256,
+      candidateSha256: build.candidate_sha256,
+      consensusSha256: build.consensus_sha256,
+      releaseStatus: build.release_status,
+      signatureValid: build.signature_valid,
+      matchesConsensus: build.matches_consensus,
+      matchesCandidate: build.matches_candidate,
+      builtAt: build.built_at,
+      environment: build.environment,
+      attestationSchema: build.attestation_schema,
+      evidenceDigest: build.evidence_digest,
+    }));
+  }
+
   public async getVerification(releaseId: string): Promise<VerificationResult> {
     const endpoint = `/releases/${encodeURIComponent(releaseId)}`;
     const res = await fetch(`${API_BASE}${endpoint}`);
@@ -599,9 +655,10 @@ class QuorumApiService {
   }
 
   public async compareSource(req: CompareRequest): Promise<ComparisonResponse> {
+    const headers = await this.requiredAdminHeaders(true);
     const res = await fetch(`${API_BASE}/sentinel/compare`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...this.adminHeaders() },
+      headers,
       body: JSON.stringify(req),
     });
     if (!res.ok) {
@@ -625,9 +682,10 @@ class QuorumApiService {
   }
 
   public async updateSentinelReview(id: string, req: ReviewRequest): Promise<ComparisonResponse> {
+    const headers = await this.requiredAdminHeaders(true);
     const res = await fetch(`${API_BASE}/sentinel/comparisons/${encodeURIComponent(id)}/review`, {
       method: 'PATCH',
-      headers: { 'Content-Type': 'application/json', ...this.adminHeaders() },
+      headers,
       body: JSON.stringify(req),
     });
     if (!res.ok) {
@@ -678,9 +736,10 @@ class QuorumApiService {
   }
 
   public async createRelayMonitor(req: CreateMonitorInput): Promise<ArtifactMonitor> {
+    const headers = await this.requiredAdminHeaders(true);
     const res = await fetch(`${API_BASE}/relay/monitors`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...this.adminHeaders() },
+      headers,
       body: JSON.stringify(req),
     });
     if (!res.ok) {
@@ -692,9 +751,10 @@ class QuorumApiService {
   }
 
   public async updateRelayMonitor(id: string, req: UpdateMonitorInput): Promise<ArtifactMonitor> {
+    const headers = await this.requiredAdminHeaders(true);
     const res = await fetch(`${API_BASE}/relay/monitors/${encodeURIComponent(id)}`, {
       method: 'PATCH',
-      headers: { 'Content-Type': 'application/json', ...this.adminHeaders() },
+      headers,
       body: JSON.stringify(req),
     });
     if (!res.ok) {
@@ -706,9 +766,10 @@ class QuorumApiService {
   }
 
   public async deleteRelayMonitor(id: string): Promise<{ deleted: boolean; id: string }> {
+    const headers = await this.requiredAdminHeaders();
     const res = await fetch(`${API_BASE}/relay/monitors/${encodeURIComponent(id)}`, {
       method: 'DELETE',
-      headers: this.adminHeaders(),
+      headers,
     });
     if (!res.ok) {
       const errBody = await res.json().catch(() => ({}));
@@ -719,9 +780,10 @@ class QuorumApiService {
   }
 
   public async triggerRelayCheck(id: string): Promise<RelayCheck> {
+    const headers = await this.requiredAdminHeaders();
     const res = await fetch(`${API_BASE}/relay/monitors/${encodeURIComponent(id)}/check`, {
       method: 'POST',
-      headers: this.adminHeaders(),
+      headers,
     });
     if (!res.ok) {
       const errBody = await res.json().catch(() => ({}));
@@ -762,9 +824,10 @@ class QuorumApiService {
   }
 
   public async createLivingIncident(input: CreateLivingIncident): Promise<LivingIncidentResult> {
+    const headers = await this.requiredAdminHeaders(true);
     const res = await fetch(`${API_BASE}/living/incidents`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...this.adminHeaders() },
+      headers,
       body: JSON.stringify(input),
     });
     if (!res.ok) {
@@ -775,22 +838,25 @@ class QuorumApiService {
   }
 
   public async reevaluateLivingReleases(): Promise<{ reevaluated: number; trust_degraded: number; assessments: LivingAssessment[] }> {
-    const res = await fetch(`${API_BASE}/living/re-evaluate`, { method: 'POST', headers: this.adminHeaders() });
+    const headers = await this.requiredAdminHeaders();
+    const res = await fetch(`${API_BASE}/living/re-evaluate`, { method: 'POST', headers });
     if (!res.ok) throw new BackendError(`Status ${res.status}: Re-evaluation failed`, res.status, '/living/re-evaluate');
     return await res.json();
   }
 
   public async repairLivingIncidentChain(): Promise<{ repaired: boolean; message: string }> {
-    const res = await fetch(`${API_BASE}/living/repair-chain`, { method: 'POST', headers: this.adminHeaders() });
+    const headers = await this.requiredAdminHeaders();
+    const res = await fetch(`${API_BASE}/living/repair-chain`, { method: 'POST', headers });
     const body = await res.json().catch(() => ({}));
     if (!res.ok) throw new BackendError(body.detail || `Status ${res.status}: Chain recovery failed`, res.status, '/living/repair-chain');
     return body;
   }
 
   public async establishRelayBaseline(id: string, req: EstablishBaselineInput): Promise<ArtifactMonitor> {
+    const headers = await this.requiredAdminHeaders(true);
     const res = await fetch(`${API_BASE}/relay/monitors/${encodeURIComponent(id)}/baseline`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...this.adminHeaders() },
+      headers,
       body: JSON.stringify(req),
     });
     if (!res.ok) {

@@ -65,15 +65,18 @@ export const BuilderEvidenceTable: React.FC<BuilderEvidenceTableProps> = ({
           </thead>
           <tbody className="divide-y divide-brand-border/50 bg-brand-panel/30">
             {attestations.map((att, idx) => {
-              const isMatch = att.artifactHash === consensusHash && att.signatureValid;
-              const isConflict = att.signatureValid && att.artifactHash !== consensusHash;
-              const isInvalidSig = !att.signatureValid;
+              const isPending = att.status === 'PENDING' || !att.artifactHash;
+              const isMatch = !isPending && att.artifactHash === consensusHash && att.signatureValid;
+              const isConflict = !isPending && att.signatureValid && att.artifactHash !== consensusHash;
+              const isInvalidSig = !isPending && !att.signatureValid;
 
               return (
                 <tr
                   key={att.id || idx}
                   className={`transition-colors duration-150 ${
-                    isConflict
+                    isPending
+                      ? 'bg-brand-panel/20 hover:bg-brand-panel-elevated/30 border-l-4 border-l-quorum-amber'
+                      : isConflict
                       ? 'bg-quorum-amber-bg/25 hover:bg-quorum-amber-bg/35 border-l-4 border-l-quorum-amber'
                       : isInvalidSig
                       ? 'bg-quorum-red-bg/25 hover:bg-quorum-red-bg/35 border-l-4 border-l-quorum-red'
@@ -85,7 +88,9 @@ export const BuilderEvidenceTable: React.FC<BuilderEvidenceTableProps> = ({
                     <div className="flex items-center gap-2.5">
                       <div
                         className={`w-7 h-7 rounded-lg grid place-items-center font-mono text-xs font-bold border ${
-                          isConflict
+                          isPending
+                            ? 'bg-quorum-amber-bg/60 border-quorum-amber-border/60 text-quorum-amber'
+                            : isConflict
                             ? 'bg-quorum-amber-bg border-quorum-amber-border text-quorum-amber'
                             : isInvalidSig
                             ? 'bg-quorum-red-bg border-quorum-red-border text-quorum-red'
@@ -97,6 +102,14 @@ export const BuilderEvidenceTable: React.FC<BuilderEvidenceTableProps> = ({
                       <div>
                         <div className="font-semibold text-white flex items-center gap-1.5">
                           <span>{att.builderName}</span>
+                          {isPending && (
+                            <span
+                              title="Awaiting builder attestation"
+                              className="inline-flex items-center gap-0.5 text-[10px] text-quorum-amber font-mono px-1.5 py-0.2 rounded bg-quorum-amber-bg border border-quorum-amber-border font-bold"
+                            >
+                              PENDING
+                            </span>
+                          )}
                           {isConflict && (
                             <span
                               title="Conflicting artifact digest produced"
@@ -128,10 +141,10 @@ export const BuilderEvidenceTable: React.FC<BuilderEvidenceTableProps> = ({
                         <span title={att.builderAddress}>
                           {truncateAddress(att.builderAddress, 6, 4)}
                         </span>
-                        <CopyButton text={att.builderAddress} title="Copy builder public key" />
+                        {att.builderAddress !== 'Pending key' && <CopyButton text={att.builderAddress} title="Copy builder public key" />}
                       </div>
                       <span className="text-[10px] font-mono text-brand-subtle block">
-                        Ed25519 identity verified
+                        {isPending ? 'Key registered' : 'Ed25519 identity verified'}
                       </span>
                     </div>
                   </td>
@@ -139,39 +152,49 @@ export const BuilderEvidenceTable: React.FC<BuilderEvidenceTableProps> = ({
                   {/* Artifact Hash Comparison */}
                   <td className="py-3.5 px-4 min-w-[280px]">
                     <div className="space-y-1">
-                      <div className="flex items-center gap-1.5">
-                        <span
-                          className={`font-mono text-[11px] font-semibold tracking-tight px-1.5 py-0.5 rounded ${
-                            isConflict
-                              ? 'text-quorum-amber bg-quorum-amber-bg/60 border border-quorum-amber-border line-through decoration-quorum-amber'
-                              : isInvalidSig
-                              ? 'text-quorum-red bg-quorum-red-bg/60 border border-quorum-red-border'
-                              : 'text-quorum-green-light bg-quorum-green-bg/40 border border-quorum-green-border/50'
-                          }`}
-                          title={`Full SHA-256: ${att.artifactHash}`}
-                        >
-                          {truncateHash(att.artifactHash, 12, 10)}
-                        </span>
-                        <CopyButton text={att.artifactHash} title="Copy artifact SHA-256" />
-                      </div>
-                      {isConflict ? (
-                        <p className="text-[10px] text-quorum-amber-light font-mono flex items-center gap-1">
-                          <AlertTriangle className="w-3 h-3 text-quorum-amber" />
-                          <span>Diverges from consensus hash</span>
-                        </p>
-                      ) : isMatch ? (
-                        <p className="text-[10px] text-quorum-green-light/80 font-mono flex items-center gap-1">
-                          <CheckCircle2 className="w-3 h-3 text-quorum-green" />
-                          <span>Exact bit-for-bit consensus match</span>
-                        </p>
-                      ) : null}
+                      {isPending ? (
+                        <span className="font-mono text-[11px] text-brand-subtle italic">Awaiting signed evidence…</span>
+                      ) : (
+                        <>
+                          <div className="flex items-center gap-1.5">
+                            <span
+                              className={`font-mono text-[11px] font-semibold tracking-tight px-1.5 py-0.5 rounded ${
+                                isConflict
+                                  ? 'text-quorum-amber bg-quorum-amber-bg/60 border border-quorum-amber-border line-through decoration-quorum-amber'
+                                  : isInvalidSig
+                                  ? 'text-quorum-red bg-quorum-red-bg/60 border border-quorum-red-border'
+                                  : 'text-quorum-green-light bg-quorum-green-bg/40 border border-quorum-green-border/50'
+                              }`}
+                              title={`Full SHA-256: ${att.artifactHash}`}
+                            >
+                              {truncateHash(att.artifactHash, 12, 10)}
+                            </span>
+                            <CopyButton text={att.artifactHash} title="Copy artifact SHA-256" />
+                          </div>
+                          {isConflict ? (
+                            <p className="text-[10px] text-quorum-amber-light font-mono flex items-center gap-1">
+                              <AlertTriangle className="w-3 h-3 text-quorum-amber" />
+                              <span>Diverges from consensus hash</span>
+                            </p>
+                          ) : isMatch ? (
+                            <p className="text-[10px] text-quorum-green-light/80 font-mono flex items-center gap-1">
+                              <CheckCircle2 className="w-3 h-3 text-quorum-green" />
+                              <span>Exact bit-for-bit consensus match</span>
+                            </p>
+                          ) : null}
+                        </>
+                      )}
                     </div>
                   </td>
 
                   {/* Ed25519 Signature */}
                   <td className="py-3.5 px-4 min-w-[150px]">
                     <div className="flex items-center gap-1.5">
-                      {att.signatureValid ? (
+                      {isPending ? (
+                        <span className="inline-flex items-center gap-1 text-[11px] font-mono text-quorum-amber font-semibold px-2 py-0.5 rounded bg-quorum-amber-bg/40 border border-quorum-amber-border/40">
+                          PENDING
+                        </span>
+                      ) : att.signatureValid ? (
                         <span className="inline-flex items-center gap-1 text-[11px] font-mono text-quorum-green font-semibold px-2 py-0.5 rounded bg-quorum-green-bg/40 border border-quorum-green-border/40">
                           <CheckCircle2 className="w-3.5 h-3.5" />
                           VALID
@@ -182,13 +205,17 @@ export const BuilderEvidenceTable: React.FC<BuilderEvidenceTableProps> = ({
                           INVALID
                         </span>
                       )}
-                      <span
-                        className="font-mono text-[10px] text-brand-subtle hidden xl:inline"
-                        title={att.signature}
-                      >
-                        ({truncateHash(att.signature, 4, 3)})
-                      </span>
-                      <CopyButton text={att.signature} title="Copy Ed25519 signature" />
+                      {!isPending && (
+                        <>
+                          <span
+                            className="font-mono text-[10px] text-brand-subtle hidden xl:inline"
+                            title={att.signature}
+                          >
+                            ({truncateHash(att.signature, 4, 3)})
+                          </span>
+                          <CopyButton text={att.signature} title="Copy Ed25519 signature" />
+                        </>
+                      )}
                     </div>
                   </td>
 

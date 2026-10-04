@@ -63,6 +63,24 @@ export interface ApiBuilderRegistryResponse {
   independence_evidence: string;
 }
 
+export interface ApiBuilderBuildResponse {
+  release_id: string;
+  repository_url: string;
+  source_commit: string;
+  artifact_name: string;
+  artifact_sha256: string;
+  candidate_sha256: string;
+  consensus_sha256: string | null;
+  release_status: ApiVerificationStatus;
+  signature_valid: boolean;
+  matches_consensus: boolean | null;
+  matches_candidate: boolean;
+  built_at: string;
+  environment: string;
+  attestation_schema: string;
+  evidence_digest: string;
+}
+
 export interface ApiTrustLayerResponse {
   status: string;
   label: string;

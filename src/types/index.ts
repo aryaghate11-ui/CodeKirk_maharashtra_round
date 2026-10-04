@@ -55,6 +55,24 @@ export interface Builder {
   verifiedByContract: boolean;
 }
 
+export interface BuilderBuild {
+  releaseId: string;
+  repositoryUrl: string;
+  sourceCommit: string;
+  artifactName: string;
+  artifactSha256: string;
+  candidateSha256: string;
+  consensusSha256: string | null;
+  releaseStatus: 'verified' | 'rejected' | 'disagreement' | 'pending';
+  signatureValid: boolean;
+  matchesConsensus: boolean | null;
+  matchesCandidate: boolean;
+  builtAt: string;
+  environment: string;
+  attestationSchema: string;
+  evidenceDigest: string;
+}
+
 export interface TrustLayerSummary {
   status: string;
   label: string;

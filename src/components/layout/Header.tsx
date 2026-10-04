@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Lock, Menu, RefreshCw, Unlock } from 'lucide-react';
 import { PageId } from './Sidebar';
 import { SystemStats } from '../../types';
@@ -23,6 +23,12 @@ export const Header: React.FC<HeaderProps> = ({
 }) => {
   const [adminUnlocked, setAdminUnlocked] = useState(api.isAdminUnlocked());
   const [authBusy, setAuthBusy] = useState(false);
+
+  useEffect(() => {
+    const syncAdminState = () => setAdminUnlocked(api.isAdminUnlocked());
+    window.addEventListener('quorum-admin-change', syncAdminState);
+    return () => window.removeEventListener('quorum-admin-change', syncAdminState);
+  }, []);
 
   const toggleAdmin = async () => {
     if (adminUnlocked) {

@@ -399,6 +399,24 @@ class BuilderRegistryResponse(BaseModel):
     independence_evidence: str
 
 
+class BuilderBuildResponse(BaseModel):
+    release_id: str
+    repository_url: str
+    source_commit: str
+    artifact_name: str
+    artifact_sha256: str
+    candidate_sha256: str
+    consensus_sha256: str | None
+    release_status: Literal["verified", "rejected", "disagreement", "pending"]
+    signature_valid: bool
+    matches_consensus: bool | None
+    matches_candidate: bool
+    built_at: str
+    environment: str
+    attestation_schema: str
+    evidence_digest: str
+
+
 class TrustLayerResponse(BaseModel):
     status: str
     label: str
@@ -1521,6 +1539,53 @@ def list_builders(*, runtime_only: bool = False) -> list[dict]:
     return builders
 
 
+def list_builder_builds(builder_id: str, limit: int = 20) -> list[dict]:
+    if builder_id not in RUNTIME_BUILDER_IDS:
+        raise HTTPException(status_code=404, detail="Runtime builder not found")
+    with connect() as db:
+        builder = db.execute("SELECT id FROM builders WHERE id = ?", (builder_id,)).fetchone()
+        if not builder:
+            return []
+        rows = db.execute(
+            """
+            SELECT a.release_id, a.artifact_sha256, a.signature_valid, a.built_at,
+                   a.environment, a.payload_json, a.signature,
+                   r.repository_url, r.source_commit, r.artifact_name,
+                   r.candidate_sha256, r.consensus_sha256, r.status AS release_status
+            FROM attestations a
+            JOIN releases r ON r.id = a.release_id
+            WHERE a.builder_id = ?
+            ORDER BY a.created_at DESC, a.id DESC
+            LIMIT ?
+            """,
+            (builder_id, limit),
+        ).fetchall()
+    builds = []
+    for row in rows:
+        payload = json.loads(row["payload_json"])
+        consensus = row["consensus_sha256"]
+        builds.append({
+            "release_id": row["release_id"],
+            "repository_url": row["repository_url"],
+            "source_commit": row["source_commit"],
+            "artifact_name": row["artifact_name"],
+            "artifact_sha256": row["artifact_sha256"],
+            "candidate_sha256": row["candidate_sha256"],
+            "consensus_sha256": consensus,
+            "release_status": row["release_status"],
+            "signature_valid": bool(row["signature_valid"]),
+            "matches_consensus": row["artifact_sha256"] == consensus if consensus else None,
+            "matches_candidate": row["artifact_sha256"] == row["candidate_sha256"],
+            "built_at": row["built_at"],
+            "environment": row["environment"],
+            "attestation_schema": payload.get("schema_version", "quorum.attestation.legacy-v0"),
+            "evidence_digest": hashlib.sha256(
+                f'{row["payload_json"]}|{row["signature"]}'.encode()
+            ).hexdigest(),
+        })
+    return builds
+
+
 def sign_demo_attestation(release_id: str, builder_id: str, artifact_hash: str, platform: str) -> AttestationCreate:
     seed_demo_builders()
     with connect() as db:
@@ -1598,6 +1663,11 @@ def blockchain_status_v1() -> dict:
 @app.get("/api/v1/builders", response_model=list[BuilderRegistryResponse])
 def builders_v1() -> list[dict]:
     return list_builders(runtime_only=True)
+
+
+@app.get("/api/v1/builders/{builder_id}/builds", response_model=list[BuilderBuildResponse])
+def builder_builds_v1(builder_id: str, limit: int = 20) -> list[dict]:
+    return list_builder_builds(builder_id, max(1, min(limit, 100)))
 
 
 @app.post("/api/v1/builders", response_model=BuilderRegistryResponse, status_code=201, dependencies=[Depends(require_admin)])

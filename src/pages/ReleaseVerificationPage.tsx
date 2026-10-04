@@ -214,11 +214,12 @@ export const ReleaseVerificationPage: React.FC<ReleaseVerificationPageProps> = (
         <div className="flex items-end justify-between mb-3 px-1"><div><h3 className="text-sm font-bold text-white">Builder consensus</h3><p className="text-xs text-brand-muted mt-0.5">The evidence that determines the result.</p></div><span className="text-xs font-mono text-brand-muted">{verification.agreement}/{verification.totalBuilders} match</span></div>
         <div className="grid md:grid-cols-3 gap-3">
           {attestations.map((attestation, index) => {
-            const matches = attestation.signatureValid && attestation.artifactHash === consensusHash;
+            const isPending = attestation.status === 'PENDING' || !attestation.artifactHash;
+            const matches = !isPending && attestation.signatureValid && attestation.artifactHash === consensusHash;
             return (
-              <div key={attestation.id || index} className={`min-w-0 overflow-hidden rounded-xl border p-4 bg-brand-panel/70 backdrop-blur-md ${matches ? 'border-quorum-green-border/70' : 'border-quorum-red-border/70'}`}>
-                <div className="flex min-w-0 items-start justify-between gap-3"><div className="min-w-0"><p className="truncate text-sm font-semibold text-white">{attestation.builderName}</p><p className="mt-0.5 block max-w-full truncate text-[11px] text-brand-muted" title={attestation.environment}>{attestation.environment}</p></div><Badge variant={matches ? 'green' : 'red'} size="sm" dot>{matches ? 'MATCH' : attestation.signatureValid ? 'CONFLICT' : 'INVALID'}</Badge></div>
-                <div className="mt-4 flex items-center gap-2 text-[11px] font-mono text-brand-subtle"><Hash className="w-3.5 h-3.5" /><span>{truncateHash(attestation.artifactHash, 10, 7)}</span></div>
+              <div key={attestation.id || index} className={`min-w-0 overflow-hidden rounded-xl border p-4 bg-brand-panel/70 backdrop-blur-md ${isPending ? 'border-brand-border/70' : matches ? 'border-quorum-green-border/70' : 'border-quorum-red-border/70'}`}>
+                <div className="flex min-w-0 items-start justify-between gap-3"><div className="min-w-0"><p className="truncate text-sm font-semibold text-white">{attestation.builderName}</p><p className="mt-0.5 block max-w-full truncate text-[11px] text-brand-muted" title={attestation.environment}>{attestation.environment}</p></div><Badge variant={isPending ? 'amber' : matches ? 'green' : 'red'} size="sm" dot>{isPending ? 'PENDING' : matches ? 'MATCH' : attestation.signatureValid ? 'CONFLICT' : 'INVALID'}</Badge></div>
+                <div className="mt-4 flex items-center gap-2 text-[11px] font-mono text-brand-subtle"><Hash className="w-3.5 h-3.5" /><span>{isPending ? 'Awaiting signed evidence…' : truncateHash(attestation.artifactHash, 10, 7)}</span></div>
               </div>
             );
           })}
