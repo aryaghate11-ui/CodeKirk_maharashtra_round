@@ -17,6 +17,13 @@ Checks that the real verifier is reachable. A valid response is JSON containing
 `status: "ok"` and `api_version: "v1"`. The frontend checks both values so a
 static HTML fallback cannot be mistaken for the backend.
 
+### Administrator authorization
+
+Security-sensitive mutations require `X-Quorum-Admin-Token`. With no
+`QUORUM_ADMIN_TOKEN` environment variable, Quorum generates a random token in
+the ignored `.quorum/admin-token` file and `start.ps1` prints it locally.
+`POST /api/v1/auth/verify` validates the token without exposing it.
+
 ### `GET /api/v1/stats`
 
 Returns live release totals and trusted-builder counts from SQLite. The frontend
@@ -24,9 +31,11 @@ maps these wire-format `snake_case` fields into its display model.
 
 ### `GET /api/v1/builders`
 
-Returns the builder registry, including pending/trusted state, public-key fingerprints, latest signed
-artifact hash, build count and measured agreement rate. Private keys are never
-stored by the API.
+Returns the builder registry, including approval/evidence state, public-key
+fingerprints, latest signed artifact hash, signature result, build count and
+measured agreement rate. `liveness_status` is `UNKNOWN` until a real heartbeat
+protocol exists; registration or approval is never presented as proof that a
+machine is online. Private keys are never stored by the API.
 
 ### `POST /api/v1/builders`
 
@@ -96,6 +105,21 @@ Returns up to the 50 most recent release verification records.
 
 Returns one complete release verification record using the same response shape
 as the demo endpoint.
+
+### `GET /api/v1/releases/{release_id}/trust-summary`
+
+Returns the canonical `quorum.trust-summary.v1` view used by every frontend
+page. It combines the historical quorum decision with current Living
+Verification, Source Sentinel, Quorum Relay and blockchain-anchor state, then
+returns one current status, one installation decision and one explanation. An
+invalid Living Verification incident chain or a confirmed blockchain anchor
+mismatch fails closed and blocks installation.
+
+The response separates `artifact_reproducibility`, `source_sentinel`, `relay`,
+`living_verification`, and `blockchain`. `overall_recommendation` is
+`INSTALL_RECOMMENDED`, `REVIEW_REQUIRED`, or `DO_NOT_INSTALL`. A reproducible
+artifact with no approved source review or no matching distribution monitor is
+`REVIEW_REQUIRED`, never “safe to install.”
 
 ### `POST /api/v1/releases/{release_id}/consumer-verifications`
 

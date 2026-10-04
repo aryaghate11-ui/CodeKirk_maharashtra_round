@@ -1,7 +1,8 @@
-import React from 'react';
-import { Menu, RefreshCw } from 'lucide-react';
+import React, { useState } from 'react';
+import { Lock, Menu, RefreshCw, Unlock } from 'lucide-react';
 import { PageId } from './Sidebar';
 import { SystemStats } from '../../types';
+import { api } from '../../services/api';
 
 interface HeaderProps {
   currentPage: PageId;
@@ -20,6 +21,27 @@ export const Header: React.FC<HeaderProps> = ({
   isRefreshing = false,
   onLaunchAttackDemo: _onLaunchAttackDemo,
 }) => {
+  const [adminUnlocked, setAdminUnlocked] = useState(api.isAdminUnlocked());
+  const [authBusy, setAuthBusy] = useState(false);
+
+  const toggleAdmin = async () => {
+    if (adminUnlocked) {
+      api.lockAdmin();
+      setAdminUnlocked(false);
+      return;
+    }
+    const token = window.prompt('Enter the Quorum admin token shown in the backend terminal:');
+    if (!token) return;
+    try {
+      setAuthBusy(true);
+      await api.unlockAdmin(token);
+      setAdminUnlocked(true);
+    } catch (error: any) {
+      window.alert(error.message || 'Administrator authorization failed.');
+    } finally {
+      setAuthBusy(false);
+    }
+  };
   const pageTitles: Record<PageId, { title: string; subtitle: string }> = {
     dashboard: {
       title: 'Can we trust this software?',
@@ -84,6 +106,15 @@ export const Header: React.FC<HeaderProps> = ({
 
         {/* Right: Controls & Real Backend Status */}
         <div className="flex items-center gap-2.5 flex-wrap sm:flex-nowrap">
+          <button
+            onClick={toggleAdmin}
+            disabled={authBusy}
+            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors disabled:opacity-50 ${adminUnlocked ? 'border-quorum-green-border bg-quorum-green-bg/50 text-quorum-green-light' : 'border-brand-border bg-brand-panel-elevated/70 text-brand-muted hover:text-white'}`}
+            title={adminUnlocked ? 'Administrator actions are unlocked for this tab. Click to lock.' : 'Unlock protected administrator actions.'}
+          >
+            {adminUnlocked ? <Unlock className="w-3.5 h-3.5" /> : <Lock className="w-3.5 h-3.5" />}
+            {adminUnlocked ? 'Admin unlocked' : 'Admin locked'}
+          </button>
           {/* Backend Connection Indicator */}
           <div
             className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs border backdrop-blur-sm ${
@@ -93,8 +124,8 @@ export const Header: React.FC<HeaderProps> = ({
             }`}
             title={
               stats?.isBackendConnected
-                ? `Connected to local FastAPI backend on port 8000 (SQLite)`
-                : 'Backend connection unavailable. Please check that FastAPI is running on port 8000.'
+                ? 'Connected to the FastAPI verification backend (SQLite)'
+                : 'Backend connection unavailable. Please check that FastAPI is running.'
             }
           >
             <span

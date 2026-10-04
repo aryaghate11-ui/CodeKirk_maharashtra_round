@@ -21,7 +21,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
+from backend.auth import require_admin
 from pydantic import BaseModel, Field, HttpUrl
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -1009,7 +1010,7 @@ def list_fixtures() -> list[dict[str, Any]]:
     ]
 
 
-@sentinel_router.post("/compare", response_model=ComparisonResponse)
+@sentinel_router.post("/compare", response_model=ComparisonResponse, dependencies=[Depends(require_admin)])
 def compare_source_versions(req: CompareRequest) -> ComparisonResponse:
     """Trigger a source code diff and security rule analysis."""
     return execute_source_comparison(
@@ -1098,7 +1099,7 @@ def get_comparison(comparison_id: str) -> ComparisonResponse:
         )
 
 
-@sentinel_router.patch("/comparisons/{comparison_id}/review", response_model=ComparisonResponse)
+@sentinel_router.patch("/comparisons/{comparison_id}/review", response_model=ComparisonResponse, dependencies=[Depends(require_admin)])
 def update_review_status(comparison_id: str, req: ReviewRequest) -> ComparisonResponse:
     """Update human review status (APPROVED / FLAGGED / PENDING) and reviewer notes."""
     init_sentinel_db()

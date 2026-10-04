@@ -27,6 +27,18 @@ export const AuditMetadataCard: React.FC<AuditMetadataCardProps> = ({
 }) => {
   const [showJsonPreview, setShowJsonPreview] = useState(false);
   const [downloadSuccess, setDownloadSuccess] = useState(false);
+  const anchorLabel = !report.anchored
+    ? 'Not anchored'
+    : report.onChainMatch === true
+      ? report.chainId === 31337 ? 'Local anchor confirmed' : 'Public anchor confirmed'
+      : report.onChainMatch === false
+        ? 'Anchor mismatch'
+        : report.chainId === 31337 ? 'Local anchor recorded · chain unavailable' : 'Anchor recorded · chain unavailable';
+  const anchorBadgeTone = report.onChainMatch === false
+    ? 'border-quorum-red-border bg-quorum-red-bg text-quorum-red-light'
+    : report.onChainMatch === true
+      ? 'border-quorum-green-border bg-quorum-green-bg text-quorum-green-light'
+      : 'border-quorum-amber-border bg-quorum-amber-bg text-quorum-amber-light';
 
   const handleDownload = () => {
     downloadJsonFile(
@@ -45,8 +57,8 @@ export const AuditMetadataCard: React.FC<AuditMetadataCardProps> = ({
           subtitle="Portable evidence snapshot with optional Anvil anchoring"
           icon={<ShieldCheck className="w-4 h-4 text-quorum-green" />}
           badge={
-            <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-brand-bg-deep border border-brand-border text-quorum-green-light">
-              {report.anchored ? (report.onChainMatch ? 'Anchor matched' : 'Anchor not confirmed') : 'Not anchored'}
+            <span className={`text-[10px] font-mono px-2 py-0.5 rounded border ${anchorBadgeTone}`}>
+              {anchorLabel}
             </span>
           }
         />

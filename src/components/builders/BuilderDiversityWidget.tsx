@@ -11,18 +11,18 @@ export const BuilderDiversityWidget: React.FC<BuilderDiversityWidgetProps> = ({ 
   return (
     <Card className="border-brand-border-bright/60">
       <CardHeader
-        title="Builder Diversity & Independent Witnesses"
-        subtitle="Preventing single points of failure in the software build pipeline"
+        title="Registered Builder Evidence"
+        subtitle="Identity, environment and signed attestation records"
         icon={<Network className="w-4 h-4 text-quorum-green" />}
         badge={
           <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-quorum-green-bg border border-quorum-green-border text-quorum-green-light">
-            {builders.filter((b) => b.status === 'ONLINE').length} Active Nodes
+            {builders.filter((b) => b.status === 'ATTESTED').length} Attested Builders
           </span>
         }
       />
       <CardBody className="space-y-4">
         <p className="text-xs text-brand-muted leading-relaxed">
-          Quorum ensures that software is built by separate systems running distinct environments. If one build server or CI environment is compromised, its divergence is isolated when other builders produce the true artifact hash.
+          These are registered identities with signed evidence. “Attested” does not mean online or physically independent. Only builders carrying a PHYSICALLY INDEPENDENT label may be counted as externally proven devices/operators.
         </p>
 
         {/* Builder Environment Cards */}

@@ -104,6 +104,20 @@ export const LivingVerificationPage: React.FC = () => {
     }
   };
 
+  const repairChain = async () => {
+    try {
+      setSubmitting(true);
+      setError(null);
+      const result = await api.repairLivingIncidentChain();
+      setNotice(result.message);
+      await load();
+    } catch (err: any) {
+      setError(err.message || 'Incident-chain recovery failed. Unlock administrator access first.');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   return (
     <div className="space-y-5">
       <Card glow={stats?.trust_degraded ? 'amber' : 'green'}>
@@ -116,8 +130,8 @@ export const LivingVerificationPage: React.FC = () => {
               <div>
                 <div className="flex items-center gap-2 flex-wrap">
                   <h2 className="text-xl font-bold text-white">Trust is a living decision</h2>
-                  <Badge variant={stats?.incident_chain.valid ? 'green' : 'red'} size="sm" dot>
-                    INCIDENT CHAIN {stats?.incident_chain.valid ? 'VALID' : 'INVALID'}
+                  <Badge variant={!stats ? 'slate' : stats.incident_chain.valid ? 'green' : 'red'} size="sm" dot>
+                    {!stats ? 'CHECKING INCIDENT CHAIN' : `INCIDENT CHAIN ${stats.incident_chain.valid ? 'VALID' : 'INVALID'}`}
                   </Badge>
                 </div>
                 <p className="text-sm text-brand-muted mt-1 max-w-2xl">
@@ -134,13 +148,23 @@ export const LivingVerificationPage: React.FC = () => {
 
       {error && <div className="rounded-xl border border-quorum-red-border bg-quorum-red-bg/70 p-4 text-sm text-quorum-red-light">{error}</div>}
       {notice && <div className="rounded-xl border border-quorum-blue-border bg-quorum-blue-bg/60 p-4 text-sm text-quorum-blue-light">{notice}</div>}
+      {stats && !stats.incident_chain.valid && (
+        <div className="rounded-xl border border-quorum-red-border bg-quorum-red-bg/75 p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div>
+            <p className="text-sm font-bold text-white">Living Verification history failed its integrity check</p>
+            <p className="text-xs text-quorum-red-light mt-1">Installation recommendations now fail closed. The incidents remain visible; an administrator can rebuild the hash links while preserving a digest of the pre-repair records in a separate repair audit chain.</p>
+            {stats.incident_chain.errors.map((item) => <p key={item} className="mt-1 text-[11px] font-mono text-red-200">{item}</p>)}
+          </div>
+          <button onClick={repairChain} disabled={submitting} className="flex-shrink-0 px-4 py-2 rounded-lg border border-quorum-red-border bg-brand-bg-deep text-sm font-semibold text-white hover:border-white/40 disabled:opacity-50">Recover with audit record</button>
+        </div>
+      )}
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         {[
-          ['Releases watched', stats?.total_releases ?? 0, Activity, 'blue'],
-          ['Currently verified', stats?.currently_verified ?? 0, CheckCircle2, 'green'],
-          ['Trust degraded', stats?.trust_degraded ?? 0, AlertTriangle, 'amber'],
-          ['Active compromises', stats?.active_compromises ?? 0, KeyRound, 'red'],
+          ['Releases watched', stats?.total_releases ?? '—', Activity, 'blue'],
+          ['Currently verified', stats?.currently_verified ?? '—', CheckCircle2, 'green'],
+          ['Trust degraded', stats?.trust_degraded ?? '—', AlertTriangle, 'amber'],
+          ['Active compromises', stats?.active_compromises ?? '—', KeyRound, 'red'],
         ].map(([label, value, Icon, tone]: any) => (
           <Card key={label}>
             <CardBody className="p-4">

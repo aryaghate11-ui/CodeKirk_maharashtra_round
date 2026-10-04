@@ -10,6 +10,7 @@ class LivingVerificationTests(unittest.TestCase):
     def setUp(self):
         main.DB_PATH = Path(tempfile.gettempdir()) / f"quorum-living-{uuid.uuid4()}.db"
         main.init_db()
+        main.seed_demo_builders()
 
     def tearDown(self):
         try:

@@ -8,7 +8,8 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Literal
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
+from backend.auth import require_admin
 from pydantic import BaseModel, Field, field_validator
 
 from backend.policy import QuorumPolicy, decide
@@ -67,6 +68,16 @@ def init_living_db(db: sqlite3.Connection | None = None) -> None:
 
             CREATE INDEX IF NOT EXISTS idx_living_assessments_status
             ON living_release_assessments(current_status);
+
+            CREATE TABLE IF NOT EXISTS living_chain_repairs (
+                id TEXT PRIMARY KEY,
+                original_records_sha256 TEXT NOT NULL,
+                errors_json TEXT NOT NULL,
+                previous_repair_hash TEXT NOT NULL,
+                repaired_chain_head TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                repair_hash TEXT NOT NULL
+            );
             """
         )
     finally:
@@ -121,6 +132,53 @@ def verify_incident_chain() -> dict[str, Any]:
         "event_count": len(rows),
         "chain_head": previous_hash if rows else None,
         "errors": errors,
+    }
+
+
+def repair_incident_chain() -> dict[str, Any]:
+    before = verify_incident_chain()
+    if before["valid"]:
+        return {"repaired": False, "message": "Incident chain is already valid.", "incident_chain": before}
+    with connect() as db:
+        rows = db.execute("SELECT * FROM living_incidents ORDER BY rowid").fetchall()
+        original = [dict(row) for row in rows]
+        original_digest = hashlib.sha256(json.dumps(original, sort_keys=True).encode()).hexdigest()
+        previous_hash = "0" * 64
+        for row in rows:
+            event_hash = hashlib.sha256(
+                f"{previous_hash}|{canonical_json(_incident_payload(row))}|{row['created_at']}".encode()
+            ).hexdigest()
+            db.execute(
+                "UPDATE living_incidents SET previous_hash = ?, event_hash = ? WHERE id = ?",
+                (previous_hash, event_hash, row["id"]),
+            )
+            previous_hash = event_hash
+        previous_repair = db.execute(
+            "SELECT repair_hash FROM living_chain_repairs ORDER BY rowid DESC LIMIT 1"
+        ).fetchone()
+        created_at = utc_now()
+        repair_id = str(uuid.uuid4())
+        repair_payload = {
+            "id": repair_id,
+            "original_records_sha256": original_digest,
+            "errors": before["errors"],
+            "repaired_chain_head": previous_hash,
+        }
+        prior = previous_repair["repair_hash"] if previous_repair else "0" * 64
+        repair_hash = hashlib.sha256(
+            f"{prior}|{canonical_json(repair_payload)}|{created_at}".encode()
+        ).hexdigest()
+        db.execute(
+            "INSERT INTO living_chain_repairs VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (repair_id, original_digest, json.dumps(before["errors"]), prior, previous_hash, created_at, repair_hash),
+        )
+    reassess_all()
+    return {
+        "repaired": True,
+        "message": "Incident hashes were rebuilt; the pre-repair record digest was preserved in the repair audit chain.",
+        "repair_id": repair_id,
+        "original_records_sha256": original_digest,
+        "incident_chain": verify_incident_chain(),
     }
 
 
@@ -291,10 +349,16 @@ def reassess_release(release_id: str, latest_incident_id: str | None = None) -> 
     return get_assessment(release_id)
 
 
-def reassess_all(latest_incident_id: str | None = None) -> list[dict[str, Any]]:
+def reassess_all(
+    latest_incident_id: str | None = None, *, runtime_only: bool = False
+) -> list[dict[str, Any]]:
     init_living_db()
-    with connect() as db:
-        release_ids = [row["id"] for row in db.execute("SELECT id FROM releases ORDER BY created_at DESC").fetchall()]
+    if runtime_only:
+        from backend.main import runtime_release_ids
+        release_ids = runtime_release_ids()
+    else:
+        with connect() as db:
+            release_ids = [row["id"] for row in db.execute("SELECT id FROM releases ORDER BY created_at DESC").fetchall()]
     return [reassess_release(release_id, latest_incident_id) for release_id in release_ids]
 
 
@@ -317,33 +381,47 @@ def get_assessment(release_id: str) -> dict[str, Any]:
     return result
 
 
-def list_assessments() -> list[dict[str, Any]]:
+def list_assessments(*, runtime_only: bool = False) -> list[dict[str, Any]]:
     init_living_db()
     with connect() as db:
         ids = [row["release_id"] for row in db.execute(
             "SELECT release_id FROM living_release_assessments ORDER BY reevaluated_at DESC, rowid DESC"
         ).fetchall()]
+    if runtime_only:
+        from backend.main import runtime_release_ids
+        allowed = set(runtime_release_ids())
+        ids = [release_id for release_id in ids if release_id in allowed]
     return [get_assessment(release_id) for release_id in ids]
 
 
-def list_incidents() -> list[dict[str, Any]]:
+def list_incidents(*, runtime_only: bool = False) -> list[dict[str, Any]]:
     init_living_db()
     with connect() as db:
+        where = "WHERE i.builder_id IN (?, ?, ?)" if runtime_only else ""
+        params = ("local-builder", "github-actions", "gitlab-ci") if runtime_only else ()
         rows = db.execute(
-            """
+            f"""
             SELECT i.*, b.name AS builder_name, b.operator
             FROM living_incidents i JOIN builders b ON b.id = i.builder_id
+            {where}
             ORDER BY i.rowid DESC
-            """
+            """,
+            params,
         ).fetchall()
     return [dict(row) for row in rows]
 
 
-def list_builder_states() -> list[dict[str, Any]]:
+def list_builder_states(*, runtime_only: bool = False) -> list[dict[str, Any]]:
     init_living_db()
     with connect() as db:
         incidents = _latest_incidents(db)
-        builders = db.execute("SELECT id, name, operator, platform, trusted FROM builders ORDER BY name").fetchall()
+        if runtime_only:
+            builders = db.execute(
+                "SELECT id, name, operator, platform, trusted FROM builders WHERE id IN (?, ?, ?) ORDER BY name",
+                ("local-builder", "github-actions", "gitlab-ci"),
+            ).fetchall()
+        else:
+            builders = db.execute("SELECT id, name, operator, platform, trusted FROM builders ORDER BY name").fetchall()
         results = []
         for builder in builders:
             incident = incidents.get(builder["id"])
@@ -413,8 +491,8 @@ def record_incident(data: IncidentCreate) -> dict[str, Any]:
 
 @living_router.get("/stats")
 def living_stats() -> dict[str, Any]:
-    assessments = list_assessments()
-    builders = list_builder_states()
+    assessments = list_assessments(runtime_only=True)
+    builders = list_builder_states(runtime_only=True)
     chain = verify_incident_chain()
     return {
         "total_releases": len(assessments),
@@ -428,29 +506,36 @@ def living_stats() -> dict[str, Any]:
 
 @living_router.get("/builders")
 def living_builders() -> list[dict[str, Any]]:
-    return list_builder_states()
+    return list_builder_states(runtime_only=True)
 
 
 @living_router.get("/incidents")
 def living_incidents() -> list[dict[str, Any]]:
-    return list_incidents()
+    return list_incidents(runtime_only=True)
 
 
-@living_router.post("/incidents", status_code=201)
+@living_router.post("/incidents", status_code=201, dependencies=[Depends(require_admin)])
 def create_living_incident(data: IncidentCreate) -> dict[str, Any]:
+    if data.builder_id not in {"local-builder", "github-actions", "gitlab-ci"}:
+        raise HTTPException(status_code=422, detail="Living Verification accepts only runtime builders")
     return record_incident(data)
 
 
 @living_router.get("/releases")
 def living_releases() -> list[dict[str, Any]]:
-    return list_assessments()
+    return list_assessments(runtime_only=True)
 
 
-@living_router.post("/re-evaluate")
+@living_router.post("/re-evaluate", dependencies=[Depends(require_admin)])
 def trigger_living_reevaluation() -> dict[str, Any]:
-    assessments = reassess_all()
+    assessments = reassess_all(runtime_only=True)
     return {
         "reevaluated": len(assessments),
         "trust_degraded": sum(1 for item in assessments if item["current_status"] == "TRUST_DEGRADED"),
         "assessments": assessments,
     }
+
+
+@living_router.post("/repair-chain", dependencies=[Depends(require_admin)])
+def repair_living_chain() -> dict[str, Any]:
+    return repair_incident_chain()

@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 from fastapi.testclient import TestClient
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-from backend import main
+from backend import auth, main
 from backend import blockchain
 from backend.passport import sign_report, verify_passport
 from backend.policy import QuorumPolicy, decide
@@ -21,6 +21,7 @@ class SecurityTests(unittest.TestCase):
         self.previous = main.DB_PATH
         main.DB_PATH = Path(self.temp.name) / 'test.db'
         main.init_db()
+        main.seed_demo_builders()
         self.client = TestClient(main.app)
 
     def tearDown(self):
@@ -31,6 +32,19 @@ class SecurityTests(unittest.TestCase):
     def report(self):
         result = main.run_demo_verification('valid')
         return main.generate_audit_report(result['release_id'])
+
+    def test_admin_token_protects_sensitive_mutations(self):
+        denied = self.client.post('/api/v1/auth/verify')
+        self.assertEqual(denied.status_code, 401)
+        wrong = self.client.post('/api/v1/auth/verify', headers={'X-Quorum-Admin-Token': 'wrong'})
+        self.assertEqual(wrong.status_code, 401)
+        allowed = self.client.post(
+            '/api/v1/auth/verify',
+            headers={'X-Quorum-Admin-Token': auth.get_admin_token()},
+        )
+        self.assertEqual(allowed.status_code, 200)
+        protected = self.client.post('/api/v1/builders', json={})
+        self.assertEqual(protected.status_code, 401)
 
     def resign(self, report):
         report.pop('report_signature', None)
@@ -194,14 +208,15 @@ class SecurityTests(unittest.TestCase):
     def test_system_integrity_scans_all_releases_and_surfaces_tampering(self):
         first = main.run_demo_verification('valid')['release_id']
         second = main.run_demo_verification('valid')['release_id']
-        clean = self.client.get('/api/v1/integrity')
-        self.assertEqual(clean.status_code, 200)
-        self.assertTrue(clean.json()['valid'])
-        self.assertEqual(clean.json()['release_count'], 2)
+        clean = main.verify_system_integrity()
+        self.assertTrue(clean['valid'])
+        self.assertEqual(clean['release_count'], 2)
+        # Synthetic Attack Lab/demo releases never appear in the runtime integrity API.
+        self.assertEqual(self.client.get('/api/v1/integrity').json()['release_count'], 0)
 
         with main.connect() as db:
             db.execute("UPDATE audit_events SET event_json = '{}' WHERE release_id = ?", (second,))
-        damaged = self.client.get('/api/v1/integrity').json()
+        damaged = main.verify_system_integrity()
         self.assertFalse(damaged['valid'])
         self.assertEqual(damaged['valid_release_count'], 1)
         by_id = {item['release_id']: item for item in damaged['releases']}

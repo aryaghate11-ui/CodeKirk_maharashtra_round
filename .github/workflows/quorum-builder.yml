@@ -2,14 +2,6 @@ name: Quorum reproducible builder
 
 on:
   workflow_dispatch:
-    inputs:
-      recipe:
-        description: Pinned recipe path
-        required: true
-        default: configs/recipes/hey.json
-      release_id:
-        description: Existing Quorum release ID for a fresh challenge (recommended)
-        required: false
 
 permissions:
   contents: read
@@ -18,40 +10,37 @@ jobs:
   build-and-attest:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
         with:
           go-version: "1.27.1"
           cache: false
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
       - name: Install signing dependency
         run: python -m pip install -r requirements.lock
-      - name: Load persistent witness key
+      - name: Load independent key and coordinator challenge
         env:
           QUORUM_BUILDER_PRIVATE_KEY_B64: ${{ secrets.QUORUM_BUILDER_PRIVATE_KEY_B64 }}
+          QUORUM_RELEASE_CHALLENGE_B64: ${{ secrets.QUORUM_RELEASE_CHALLENGE_B64 }}
         run: |
           test -n "$QUORUM_BUILDER_PRIVATE_KEY_B64"
+          test -n "$QUORUM_RELEASE_CHALLENGE_B64"
           mkdir -p .quorum/keys builder-results
           printf '%s' "$QUORUM_BUILDER_PRIVATE_KEY_B64" | base64 --decode > .quorum/keys/github-actions.pem
+          printf '%s' "$QUORUM_RELEASE_CHALLENGE_B64" | base64 --decode > .quorum/release-challenge.json
           chmod 600 .quorum/keys/github-actions.pem
       - name: Rebuild pinned source, hash and sign
-        env:
-          QUORUM_RECIPE: ${{ inputs.recipe }}
-          QUORUM_RELEASE_ID: ${{ inputs.release_id }}
         run: |
-          args=(python -m builder.agent run
-            --config configs/builders/github-actions.json
-            --recipe "$QUORUM_RECIPE"
-            --key .quorum/keys/github-actions.pem
-            --output builder-results/github-actions.json)
-          if [ -n "$QUORUM_RELEASE_ID" ]; then
-            args+=(--release-id "$QUORUM_RELEASE_ID")
-          fi
-          "${args[@]}"
-      - uses: actions/upload-artifact@v7
+          python -m builder.agent run \
+            --config configs/builders/github-actions.json \
+            --challenge .quorum/release-challenge.json \
+            --key .quorum/keys/github-actions.pem \
+            --output builder-results/github-actions.json
+      - uses: actions/upload-artifact@v4
         with:
-          name: quorum-github-actions-attestation
+          name: quorum-github-actions-evidence
           path: builder-results/github-actions.json
           if-no-files-found: error
+          retention-days: 7

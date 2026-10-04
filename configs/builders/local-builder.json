@@ -1,10 +1,10 @@
 {
   "schema_version": "quorum.builder-config.v1",
   "builder": {
-    "id": "laptop-one",
-    "name": "Laptop One Witness",
-    "operator": "Laptop One",
-    "runtime": "native-windows"
+    "id": "local-builder",
+    "name": "Local Builder",
+    "operator": "Local Quorum Operator",
+    "runtime": "local-native"
   },
   "source": {
     "repository_url": "https://github.com/rakyll/hey",
@@ -19,4 +19,3 @@
     "command": ["go", "build", "-trimpath", "-buildvcs=false", "-ldflags=-buildid=", "-o", "{artifact}", "./"]
   }
 }
-

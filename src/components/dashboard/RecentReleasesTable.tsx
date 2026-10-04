@@ -22,7 +22,7 @@ export const RecentReleasesTable: React.FC<RecentReleasesTableProps> = ({
             <th className="py-3 px-4 font-semibold">Package</th>
             <th className="py-3 px-4 font-semibold">Version</th>
             <th className="py-3 px-4 font-semibold text-center">Attestations</th>
-            <th className="py-3 px-4 font-semibold">Status</th>
+            <th className="py-3 px-4 font-semibold">Original quorum</th>
             <th className="py-3 px-4 font-semibold text-right">Action</th>
           </tr>
         </thead>

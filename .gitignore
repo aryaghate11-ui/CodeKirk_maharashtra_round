@@ -16,6 +16,8 @@ backend/data/
 # Local builder identities and generated evidence
 .quorum/
 builder-results/
+builder-challenge.json
+builder-challenges/
 
 # Foundry build output
 contracts/cache/

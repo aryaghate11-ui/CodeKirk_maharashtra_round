@@ -7,7 +7,7 @@ from pathlib import Path
 
 os.environ["QUORUM_DB_PATH"] = str(Path(tempfile.gettempdir()) / "quorum-test.db")
 
-from backend import main  # noqa: E402
+from backend import living, main  # noqa: E402
 from builder import agent  # noqa: E402
 from scripts.verify_audit_report import verify_report  # noqa: E402
 
@@ -92,6 +92,57 @@ class QuorumDecisionTests(unittest.TestCase):
         stats = main.SystemStatsResponse.model_validate(main.get_system_stats())
         self.assertEqual(stats.releases_verified, 1)
         self.assertEqual(stats.active_builders, 3)
+
+    def test_release_trust_summary_is_the_canonical_fail_closed_view(self):
+        verification = main.run_demo_verification(
+            "valid", threshold=2, reject_on_conflict=False
+        )
+        summary = main.ReleaseTrustSummaryResponse.model_validate(
+            main.build_release_trust_summary(verification["release_id"])
+        )
+        self.assertEqual(summary.schema_version, "quorum.trust-summary.v1")
+        self.assertEqual(summary.historical_status, "VERIFIED")
+        self.assertEqual(summary.current_status, "VERIFIED")
+        self.assertFalse(summary.installation_allowed)
+        self.assertEqual(summary.overall_recommendation, "REVIEW_REQUIRED")
+        self.assertEqual(summary.artifact_reproducibility.status, "VERIFIED")
+        self.assertEqual(summary.living_verification.status, "VERIFIED")
+        self.assertEqual(summary.blockchain.status, "NOT_ANCHORED")
+
+    def test_builder_registry_never_infers_network_liveness_from_trust(self):
+        main.run_demo_verification("valid", threshold=2, reject_on_conflict=False)
+        builders = [main.BuilderRegistryResponse.model_validate(item) for item in main.list_builders()]
+        self.assertTrue(builders)
+        self.assertTrue(all(builder.liveness_status == "UNKNOWN" for builder in builders))
+        self.assertTrue(all(builder.evidence_status == "ATTESTED" for builder in builders))
+        self.assertTrue(all(builder.latest_signature_valid is True for builder in builders))
+        self.assertTrue(all(not builder.independence_verified for builder in builders))
+
+    def test_trust_summary_blocks_installation_when_incident_chain_is_tampered(self):
+        verification = main.run_demo_verification(
+            "valid", threshold=2, reject_on_conflict=False
+        )
+        living.record_incident(living.IncidentCreate(
+            builder_id="northstar-ci",
+            action="COMPROMISED",
+            reason="Future-dated incident used to exercise chain integrity.",
+            effective_from="2999-01-01T00:00:00+00:00",
+        ))
+        with main.connect() as db:
+            db.execute(
+                "UPDATE living_incidents SET reason = ? WHERE builder_id = ?",
+                ("Tampered incident record", "northstar-ci"),
+            )
+        summary = main.build_release_trust_summary(verification["release_id"])
+        self.assertEqual(summary["current_status"], "INTEGRITY_FAILURE")
+        self.assertEqual(summary["living_verification"]["label"], "Incident chain invalid")
+        self.assertFalse(summary["installation_allowed"])
+        repaired = living.repair_incident_chain()
+        self.assertTrue(repaired["repaired"])
+        self.assertTrue(repaired["incident_chain"]["valid"])
+        with main.connect() as db:
+            repair_count = db.execute("SELECT COUNT(*) FROM living_chain_repairs").fetchone()[0]
+        self.assertEqual(repair_count, 1)
 
     def test_three_of_three_policy_rejects_a_conflicting_build(self):
         result = main.run_demo_verification(
@@ -215,9 +266,9 @@ class QuorumDecisionTests(unittest.TestCase):
         configs = [
             agent.load_config(root / "configs" / "builders" / filename)
             for filename in (
+                "local-builder.json",
                 "github-actions.json",
-                "laptop-one.json",
-                "laptop-two.json",
+                "gitlab-ci.json",
             )
         ]
         self.assertEqual(len({agent.recipe_sha256(config) for config in configs}), 1)
@@ -243,7 +294,7 @@ class QuorumDecisionTests(unittest.TestCase):
 
     def test_builder_can_sign_a_release_specific_challenge(self):
         config = agent.load_config(
-            Path(__file__).resolve().parents[1] / "configs" / "builders" / "laptop-one.json"
+            Path(__file__).resolve().parents[1] / "configs" / "builders" / "local-builder.json"
         )
         private_key = main.Ed25519PrivateKey.generate()
         main.register_builder(main.BuilderRegistrationRequest(

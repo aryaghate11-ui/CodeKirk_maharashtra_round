@@ -21,7 +21,8 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import APIRouter, HTTPException, Query, BackgroundTasks
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from backend.auth import require_admin
 from pydantic import BaseModel, Field, HttpUrl, field_validator, model_validator
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -1085,6 +1086,11 @@ def list_eligible_verified_releases() -> list[dict[str, Any]]:
                    (SELECT COUNT(*) FROM attestations a WHERE a.release_id = r.id AND a.signature_valid = 1) AS attestation_count
             FROM releases r
             WHERE r.status = 'verified' AND r.consensus_sha256 IS NOT NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM attestations blocked
+                  WHERE blocked.release_id = r.id
+                    AND blocked.builder_id NOT IN ('local-builder', 'github-actions', 'gitlab-ci')
+              )
             ORDER BY r.created_at DESC
             LIMIT 50
             """
@@ -1292,7 +1298,7 @@ def list_monitors() -> list[dict[str, Any]]:
         return results
 
 
-@relay_router.post("/monitors", response_model=ArtifactMonitorResponse, status_code=201)
+@relay_router.post("/monitors", response_model=ArtifactMonitorResponse, status_code=201, dependencies=[Depends(require_admin)])
 def create_monitor(data: ArtifactMonitorCreate) -> dict[str, Any]:
     """Register a new artifact monitor linked to a verified release or manual reference hash."""
     init_relay_db()
@@ -1376,7 +1382,7 @@ def get_monitor(monitor_id: str) -> dict[str, Any]:
         return d
 
 
-@relay_router.patch("/monitors/{monitor_id}", response_model=ArtifactMonitorResponse)
+@relay_router.patch("/monitors/{monitor_id}", response_model=ArtifactMonitorResponse, dependencies=[Depends(require_admin)])
 def update_monitor(monitor_id: str, data: ArtifactMonitorUpdate) -> dict[str, Any]:
     """Update monitor settings (enabled/disabled state, check interval, name, description)."""
     init_relay_db()
@@ -1412,7 +1418,7 @@ def update_monitor(monitor_id: str, data: ArtifactMonitorUpdate) -> dict[str, An
     return get_monitor(monitor_id)
 
 
-@relay_router.delete("/monitors/{monitor_id}")
+@relay_router.delete("/monitors/{monitor_id}", dependencies=[Depends(require_admin)])
 def delete_monitor(monitor_id: str) -> dict[str, Any]:
     """Remove an artifact monitor and its associated check history."""
     init_relay_db()
@@ -1423,7 +1429,7 @@ def delete_monitor(monitor_id: str) -> dict[str, Any]:
     return {"status": "ok", "deleted_monitor_id": monitor_id}
 
 
-@relay_router.post("/monitors/{monitor_id}/check", response_model=RelayCheckResponse)
+@relay_router.post("/monitors/{monitor_id}/check", response_model=RelayCheckResponse, dependencies=[Depends(require_admin)])
 def trigger_manual_check(monitor_id: str) -> RelayCheckResponse:
     """Manually trigger an immediate independent artifact check."""
     return perform_monitor_check(monitor_id)
@@ -1456,7 +1462,7 @@ def get_monitor_history(monitor_id: str, limit: int = Query(default=50, ge=1, le
         return results
 
 
-@relay_router.post("/monitors/{monitor_id}/baseline", response_model=ArtifactMonitorResponse)
+@relay_router.post("/monitors/{monitor_id}/baseline", response_model=ArtifactMonitorResponse, dependencies=[Depends(require_admin)])
 def establish_monitor_baseline(monitor_id: str, data: EstablishBaselineRequest) -> dict[str, Any]:
     """
     Explicitly establishes or updates an approved Trusted Baseline SHA-256 hash for a monitor.

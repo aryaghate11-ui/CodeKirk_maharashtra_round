@@ -6,4 +6,5 @@ if (-not (Test-Path -LiteralPath ".venv\Scripts\python.exe")) {
 }
 
 & ".venv\Scripts\python.exe" -m pip install -r requirements.lock
+& ".venv\Scripts\python.exe" -c "from backend.auth import get_admin_token; print('Quorum admin token:', get_admin_token())"
 & ".venv\Scripts\python.exe" -m uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload

@@ -60,12 +60,12 @@ export const BuildersPage: React.FC = () => {
             Registered Builder Nodes
           </h3>
           <p className="text-xs text-brand-muted mt-0.5">
-            Nodes independently compile source commits and generate Ed25519-signed build attestations.
+            Registered identities and their latest signed evidence. Live connectivity and real-world independence are shown separately and never inferred from trust.
           </p>
         </div>
 
         <span className="text-xs font-mono px-2.5 py-1 rounded-lg bg-brand-panel-elevated/75 backdrop-blur-sm border border-brand-border/70 text-quorum-green-light">
-          {builders.filter((b) => b.status === 'ONLINE').length} / {builders.length} Online
+          {builders.filter((b) => b.status === 'ATTESTED').length} / {builders.length} Attested
         </span>
       </div>
 

@@ -19,8 +19,8 @@ export const WhyDecisionCard: React.FC<WhyDecisionCardProps> = ({ verification }
   return (
     <Card className="h-full">
       <CardHeader
-        title="Why This Decision?"
-        subtitle="Backend-evaluated consensus justification"
+        title="Why the Original Decision?"
+        subtitle="Historical backend-evaluated consensus justification"
         icon={<FileQuestion className="w-4 h-4 text-brand-muted" />}
       />
       <CardBody className="space-y-4">

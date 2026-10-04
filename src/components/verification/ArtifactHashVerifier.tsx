@@ -185,9 +185,10 @@ export const ArtifactHashVerifier: React.FC<ArtifactHashVerifierProps> = ({
                   : <FileWarning className="w-5 h-5 flex-shrink-0 mt-0.5" />}
                 <div>
                   <p className="text-sm font-bold uppercase tracking-wide">
-                    Artifact {result.decision}
+                    {result.decision === 'accepted' ? 'Artifact hash matches' : `Artifact ${result.decision}`}
                   </p>
                   <p className="text-sm mt-1 text-brand-text">{result.reason}</p>
+                  {result.decision === 'accepted' && <p className="text-xs mt-2 text-brand-muted">This proves file identity and reproducibility only. Follow the overall installation recommendation above.</p>}
                 </div>
               </div>
             )}

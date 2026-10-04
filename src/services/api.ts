@@ -7,8 +7,8 @@ import {
   AuditReport,
   AuditEvent,
   SystemStats,
-  ScenarioId,
   ConsumerArtifactVerification,
+  ReleaseTrustSummary,
 } from '../types';
 import {
   ApiConsumerArtifactResponse,
@@ -18,6 +18,7 @@ import {
   ApiSystemStatsResponse,
   ApiVerificationResponse,
   ApiVerificationStatus,
+  ApiReleaseTrustSummaryResponse,
 } from '../types/api';
 import {
   FixtureItem,
@@ -45,28 +46,12 @@ import {
   LivingIncidentResult,
   LivingStats,
 } from '../types/living';
-import {
-  MOCK_BUILDERS,
-  MOCK_RELEASES,
-  MOCK_SYSTEM_STATS,
-  DEFAULT_POLICY,
-} from '../mock/data';
-import {
-  getMockVerificationForScenario,
-} from '../mock/scenarios';
-import {
-  MOCK_AUDIT_EVENTS,
-  generateAuditReport,
-} from '../mock/auditData';
-
 const RAW_API_URL = (import.meta.env.VITE_API_URL || '').replace(/\/+$/, '');
 export const API_BASE = RAW_API_URL
   ? (RAW_API_URL.endsWith('/api/v1') ? RAW_API_URL : `${RAW_API_URL}/api/v1`)
   : '/api/v1';
-// If VITE_DISABLE_MOCK=true or VITE_STRICT_BACKEND=true, fallback to mock data is strictly disabled
-const ENV_STRICT =
-  import.meta.env.VITE_DISABLE_MOCK === 'true' ||
-  import.meta.env.VITE_STRICT_BACKEND === 'true';
+// Runtime verification always fails closed. Synthetic data is confined to the
+// explicit Attack Lab backend and is never substituted for release evidence.
 
 const decisionFromStatus = (status: ApiVerificationStatus): VerificationResult['decision'] => ({
   verified: 'ACCEPTED',
@@ -86,7 +71,7 @@ const mapVerificationResponse = (
   const agreement = consensusHash
     ? data.builders.filter((builder) => builder.artifact_sha256 === consensusHash).length
     : 0;
-  const totalBuilders = data.builders.length;
+  const totalBuilders = data.release.expected_builders;
   const decision = decisionFromStatus(data.status);
   const policy: QuorumPolicy = {
     type: 'k-of-n',
@@ -115,12 +100,20 @@ const mapVerificationResponse = (
     os: builder.platform,
     runtime: builder.attestation_schema,
     region: `Builder ${index + 1}`,
-    status: 'ONLINE',
+    status: 'ATTESTED',
     trusted: true,
-    uptime: 100,
+    uptime: null,
     latestAttestationTime: builder.built_at,
     lastArtifactHash: builder.artifact_sha256,
     signatureStatus: builder.signature_valid ? 'VALID' : 'INVALID',
+    livenessStatus: 'UNKNOWN',
+    deploymentClass: builder.id === 'github-actions' || builder.id === 'gitlab-ci'
+      ? 'HOSTED_RUNNER'
+      : 'LOCAL_ISOLATED',
+    independenceVerified: false,
+    independenceEvidence: builder.id === 'local-builder'
+      ? 'Evidence was signed by the registered local builder key.'
+      : 'Evidence was signed by the registered hosted CI builder key.',
     totalBuilds: 1,
     agreementRate: builder.artifact_sha256 === consensusHash ? 100 : 0,
     verifiedByContract: false,
@@ -317,9 +310,9 @@ export class BackendError extends Error {
 }
 
 class QuorumApiService {
-  private strictBackendMode: boolean = ENV_STRICT;
   private backendAvailable: boolean = false;
   private lastPingMs: number = 42;
+  private adminToken: string = typeof window !== 'undefined' ? sessionStorage.getItem('quorum-admin-token') || '' : '';
 
   constructor() {
     this.detectBackend();
@@ -350,123 +343,123 @@ class QuorumApiService {
   }
 
   public isStrictBackendMode(): boolean {
-    return this.strictBackendMode;
+    return true;
   }
 
-  public setStrictBackendMode(strict: boolean): void {
-    this.strictBackendMode = strict;
+  public setStrictBackendMode(_strict: boolean): void {
+    // Compatibility no-op: verification is always fail-closed.
   }
 
   public isBackendAvailable(): boolean {
     return this.backendAvailable;
   }
 
-  public isMockMode(): boolean {
-    if (this.strictBackendMode) return false;
-    return !this.backendAvailable;
+  private adminHeaders(): Record<string, string> {
+    return this.adminToken ? { 'X-Quorum-Admin-Token': this.adminToken } : {};
   }
 
-  private handleFailure(endpoint: string, err: any, mockFallback: () => any) {
-    if (this.strictBackendMode) {
-      throw new BackendError(
-        `FastAPI Backend request to ${endpoint} failed: ${err.message || 'Connection error'}. Strict backend verification mode is enabled; mock fallback is blocked.`,
-        err.status,
-        endpoint
-      );
-    }
-    console.warn(`[Quorum API] Backend call to ${endpoint} unavailable, falling back to mock engine:`, err);
-    return mockFallback();
+  public isAdminUnlocked(): boolean {
+    return Boolean(this.adminToken);
+  }
+
+  public lockAdmin(): void {
+    this.adminToken = '';
+    if (typeof window !== 'undefined') sessionStorage.removeItem('quorum-admin-token');
+  }
+
+  public async unlockAdmin(token: string): Promise<void> {
+    const cleanToken = token.trim();
+    const res = await fetch(`${API_BASE}/auth/verify`, {
+      method: 'POST',
+      headers: { 'X-Quorum-Admin-Token': cleanToken },
+    });
+    if (!res.ok) throw new BackendError('Invalid administrator token.', res.status, '/auth/verify');
+    this.adminToken = cleanToken;
+    if (typeof window !== 'undefined') sessionStorage.setItem('quorum-admin-token', cleanToken);
+  }
+
+  public isMockMode(): boolean {
+    return false;
   }
 
   public async getSystemStats(): Promise<SystemStats> {
-    const backendReady = this.backendAvailable || await this.detectBackend();
-    if (backendReady || this.strictBackendMode) {
-      try {
-        const res = await fetch(`${API_BASE}/stats`);
-        if (res.ok) {
-          const data = await res.json() as ApiSystemStatsResponse;
-          return {
-            releasesVerified: data.releases_verified,
-            releasesRejected: data.releases_rejected,
-            conflictsDetected: data.conflicts_detected,
-            activeBuilders: data.active_builders,
-            network: data.network,
-            contractAddress: data.contract_address,
-            consensusHealth: data.consensus_health,
-            averageVerificationTimeSeconds: data.average_verification_time_seconds,
-            isBackendConnected: true,
-            backendLatencyMs: this.lastPingMs,
-          };
-        } else {
-          throw new BackendError(`Status ${res.status}`, res.status, '/stats');
-        }
-      } catch (e: any) {
-        return this.handleFailure('/stats', e, () => ({
-          ...MOCK_SYSTEM_STATS,
-          isBackendConnected: this.backendAvailable,
-          backendLatencyMs: this.backendAvailable ? this.lastPingMs : null,
-        }));
-      }
+    const res = await fetch(`${API_BASE}/stats`);
+    if (!res.ok) {
+      throw new BackendError(`Status ${res.status}; no mock state substituted`, res.status, '/stats');
     }
-
+    this.backendAvailable = true;
+    const data = await res.json() as ApiSystemStatsResponse;
     return {
-      ...MOCK_SYSTEM_STATS,
-      isBackendConnected: this.backendAvailable,
-      backendLatencyMs: this.backendAvailable ? this.lastPingMs : null,
+      releasesVerified: data.releases_verified,
+      releasesRejected: data.releases_rejected,
+      conflictsDetected: data.conflicts_detected,
+      activeBuilders: data.active_builders,
+      network: data.network,
+      contractAddress: data.contract_address,
+      consensusHealth: data.consensus_health,
+      averageVerificationTimeSeconds: data.average_verification_time_seconds,
+      isBackendConnected: true,
+      backendLatencyMs: this.lastPingMs,
     };
   }
 
   public async getReleases(): Promise<Release[]> {
-    if (!this.isMockMode() || this.strictBackendMode) {
-      try {
-        const res = await fetch(`${API_BASE}/releases`);
-        if (res.ok) {
-          const data = await res.json() as ApiVerificationResponse[];
-          return data.map((item) => mapVerificationResponse(
-            item,
-            item.threshold === 3 ? '3-of-3' : '2-of-3'
-          ).release);
-        }
-        throw new BackendError(`Status ${res.status}`, res.status, '/releases');
-      } catch (e: any) {
-        return this.handleFailure('/releases', e, () => [...MOCK_RELEASES]);
-      }
-    }
-    await new Promise((r) => setTimeout(r, 80));
-    return [...MOCK_RELEASES];
+    const res = await fetch(`${API_BASE}/releases`);
+    if (!res.ok) throw new BackendError(`Status ${res.status}; no mock state substituted`, res.status, '/releases');
+    const data = await res.json() as ApiVerificationResponse[];
+    return data.map((item) => mapVerificationResponse(
+      item,
+      item.threshold === 3 ? '3-of-3' : '2-of-3'
+    ).release);
   }
 
   public async getRelease(id: string): Promise<Release | null> {
-    if (!this.isMockMode() || this.strictBackendMode) {
-      try {
-        const res = await fetch(`${API_BASE}/releases/${encodeURIComponent(id)}`);
-        if (res.ok) {
-          const data = await res.json() as ApiVerificationResponse;
-          return mapVerificationResponse(
-            data,
-            data.threshold === 3 ? '3-of-3' : '2-of-3'
-          ).release;
-        }
-        throw new BackendError(`Status ${res.status}`, res.status, `/releases/${id}`);
-      } catch (e: any) {
-        return this.handleFailure(`/releases/${id}`, e, () => {
-          const found = MOCK_RELEASES.find((r) => r.id === id);
-          return found || MOCK_RELEASES[0];
-        });
+    const endpoint = `/releases/${encodeURIComponent(id)}`;
+    const res = await fetch(`${API_BASE}${endpoint}`);
+    if (res.status === 404) return null;
+    if (!res.ok) throw new BackendError(`Status ${res.status}; no mock state substituted`, res.status, endpoint);
+    const data = await res.json() as ApiVerificationResponse;
+    return mapVerificationResponse(data, data.threshold === 3 ? '3-of-3' : '2-of-3').release;
+  }
+
+  public async getTrustSummary(releaseId: string): Promise<ReleaseTrustSummary> {
+    try {
+      const res = await fetch(`${API_BASE}/releases/${releaseId}/trust-summary`);
+      if (!res.ok) {
+        throw new BackendError(`Status ${res.status}`, res.status, `/releases/${releaseId}/trust-summary`);
       }
+      const data = await res.json() as ApiReleaseTrustSummaryResponse;
+      return {
+        schemaVersion: data.schema_version,
+        releaseId: data.release_id,
+        historicalStatus: data.historical_status,
+        currentStatus: data.current_status,
+        installationAllowed: data.installation_allowed,
+        decisionReason: data.decision_reason,
+        overallRecommendation: data.overall_recommendation,
+        recommendationReason: data.recommendation_reason,
+        artifactReproducibility: data.artifact_reproducibility,
+        livingVerification: data.living_verification,
+        sourceSentinel: data.source_sentinel,
+        relay: data.relay,
+        blockchain: data.blockchain,
+      };
+    } catch (error: any) {
+      throw error instanceof BackendError
+        ? error
+        : new BackendError(
+            `Release trust summary failed: ${error.message || 'Connection error'}`,
+            error.status,
+            `/releases/${releaseId}/trust-summary`,
+          );
     }
-    await new Promise((r) => setTimeout(r, 50));
-    const found = MOCK_RELEASES.find((r) => r.id === id);
-    return found || MOCK_RELEASES[0];
   }
 
   public async getBuilders(): Promise<Builder[]> {
-    if (!this.isMockMode() || this.strictBackendMode) {
-      try {
-        const res = await fetch(`${API_BASE}/builders`);
-        if (res.ok) {
-          const data = await res.json() as ApiBuilderRegistryResponse[];
-          return data.map((builder) => ({
+    const res = await fetch(`${API_BASE}/builders`);
+    if (!res.ok) throw new BackendError(`Status ${res.status}; no mock state substituted`, res.status, '/builders');
+    const data = await res.json() as ApiBuilderRegistryResponse[];
+    return data.map((builder) => ({
             id: builder.id,
             name: builder.name,
             shortCode: builder.name
@@ -481,65 +474,22 @@ class QuorumApiService {
             os: builder.platform,
             runtime: 'quorum.attestation.v2',
             region: builder.operator,
-            status: builder.trusted ? 'ONLINE' : 'PENDING_APPROVAL',
+            status: builder.evidence_status,
             trusted: builder.trusted,
-            uptime: 100,
-            latestAttestationTime: builder.latest_attestation_at || builder.created_at,
-            lastArtifactHash: builder.latest_artifact_sha256 || '0'.repeat(64),
-            signatureStatus: 'VALID',
+            uptime: null,
+            latestAttestationTime: builder.latest_attestation_at,
+            lastArtifactHash: builder.latest_artifact_sha256,
+            signatureStatus: builder.latest_signature_valid === null
+              ? 'NOT_ATTESTED'
+              : builder.latest_signature_valid ? 'VALID' : 'INVALID',
+            livenessStatus: builder.liveness_status,
+            deploymentClass: builder.deployment_class,
+            independenceVerified: builder.independence_verified,
+            independenceEvidence: builder.independence_evidence,
             totalBuilds: builder.total_builds,
             agreementRate: builder.agreement_rate,
             verifiedByContract: false,
           }));
-        }
-        throw new BackendError(`Status ${res.status}`, res.status, '/builders');
-      } catch (e: any) {
-        return this.handleFailure('/builders', e, () => [...MOCK_BUILDERS]);
-      }
-    }
-    await new Promise((r) => setTimeout(r, 70));
-    return [...MOCK_BUILDERS];
-  }
-
-  public async getAttestations(releaseId: string): Promise<Attestation[]> {
-    if (!this.isMockMode() || this.strictBackendMode) {
-      try {
-        const res = await fetch(`${API_BASE}/releases/${encodeURIComponent(releaseId)}/attestations`);
-        if (res.ok) return await res.json();
-        throw new BackendError(`Status ${res.status}`, res.status, `/releases/${releaseId}/attestations`);
-      } catch (e: any) {
-        return this.handleFailure(`/releases/${releaseId}/attestations`, e, () => {
-          const verification = getMockVerificationForScenario('valid', '2-of-3', releaseId);
-          return verification.attestations;
-        });
-      }
-    }
-    const verification = getMockVerificationForScenario('valid', '2-of-3', releaseId);
-    return verification.attestations;
-  }
-
-  public async verifyRelease(
-    releaseId: string,
-    scenarioId: ScenarioId = 'valid',
-    policyType: '2-of-3' | '3-of-3' = '2-of-3'
-  ): Promise<VerificationResult> {
-    if (!this.isMockMode() || this.strictBackendMode) {
-      try {
-        const res = await fetch(`${API_BASE}/verify`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ releaseId, scenarioId, policyType }),
-        });
-        if (res.ok) return await res.json();
-        throw new BackendError(`Status ${res.status}`, res.status, '/verify');
-      } catch (e: any) {
-        return this.handleFailure('/verify', e, () =>
-          getMockVerificationForScenario(scenarioId, policyType, releaseId)
-        );
-      }
-    }
-
-    return getMockVerificationForScenario(scenarioId, policyType, releaseId);
   }
 
   public async getVerification(releaseId: string): Promise<VerificationResult> {
@@ -558,7 +508,7 @@ class QuorumApiService {
     const threshold = policyType === '3-of-3' ? 3 : 2;
     const res = await fetch(`${API_BASE}${endpoint}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...this.adminHeaders() },
       body: JSON.stringify({
         mode: policyType === '3-of-3' ? 'all' : 'k-of-n',
         threshold,
@@ -593,54 +543,12 @@ class QuorumApiService {
 
   public async anchorRelease(releaseId: string): Promise<AuditReport> {
     const endpoint = `/releases/${encodeURIComponent(releaseId)}/anchor`;
-    const res = await fetch(`${API_BASE}${endpoint}`, { method: 'POST' });
+    const res = await fetch(`${API_BASE}${endpoint}`, { method: 'POST', headers: this.adminHeaders() });
     if (!res.ok) {
       const body = await res.json().catch(() => ({})) as { detail?: string };
       throw new BackendError(body.detail || `Status ${res.status}`, res.status, endpoint);
     }
     return mapAuditReport(await res.json() as ApiAuditReportResponse);
-  }
-
-  public async getPolicy(): Promise<QuorumPolicy> {
-    if (!this.isMockMode() || this.strictBackendMode) {
-      try {
-        const res = await fetch(`${API_BASE}/policy`);
-        if (res.ok) return await res.json();
-        throw new BackendError(`Status ${res.status}`, res.status, '/policy');
-      } catch (e: any) {
-        return this.handleFailure('/policy', e, () => DEFAULT_POLICY);
-      }
-    }
-    return DEFAULT_POLICY;
-  }
-
-  public async runDemoScenario(
-    scenarioId: ScenarioId,
-    policyType: '2-of-3' | '3-of-3' = '2-of-3',
-    releaseId: string = ''
-  ): Promise<VerificationResult> {
-    const backendReady = this.backendAvailable || await this.detectBackend();
-    const backendScenario = scenarioId === 'valid' || scenarioId === 'conflict' || scenarioId === 'tampered';
-    if ((backendReady || this.strictBackendMode) && backendScenario) {
-      try {
-        const res = await fetch(`${API_BASE}/demo/verify`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ scenario: scenarioId, policy: policyType }),
-        });
-        if (res.ok) {
-          const data = await res.json() as ApiVerificationResponse;
-          return mapVerificationResponse(data, policyType);
-        }
-        throw new BackendError(`Status ${res.status}`, res.status, '/demo/verify');
-      } catch (e: any) {
-        return this.handleFailure('/demo/verify', e, () =>
-          getMockVerificationForScenario(scenarioId, policyType, releaseId)
-        );
-      }
-    }
-
-    return getMockVerificationForScenario(scenarioId, policyType, releaseId);
   }
 
   public async verifyConsumerArtifact(
@@ -693,7 +601,7 @@ class QuorumApiService {
   public async compareSource(req: CompareRequest): Promise<ComparisonResponse> {
     const res = await fetch(`${API_BASE}/sentinel/compare`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...this.adminHeaders() },
       body: JSON.stringify(req),
     });
     if (!res.ok) {
@@ -719,7 +627,7 @@ class QuorumApiService {
   public async updateSentinelReview(id: string, req: ReviewRequest): Promise<ComparisonResponse> {
     const res = await fetch(`${API_BASE}/sentinel/comparisons/${encodeURIComponent(id)}/review`, {
       method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...this.adminHeaders() },
       body: JSON.stringify(req),
     });
     if (!res.ok) {
@@ -772,7 +680,7 @@ class QuorumApiService {
   public async createRelayMonitor(req: CreateMonitorInput): Promise<ArtifactMonitor> {
     const res = await fetch(`${API_BASE}/relay/monitors`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...this.adminHeaders() },
       body: JSON.stringify(req),
     });
     if (!res.ok) {
@@ -786,7 +694,7 @@ class QuorumApiService {
   public async updateRelayMonitor(id: string, req: UpdateMonitorInput): Promise<ArtifactMonitor> {
     const res = await fetch(`${API_BASE}/relay/monitors/${encodeURIComponent(id)}`, {
       method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...this.adminHeaders() },
       body: JSON.stringify(req),
     });
     if (!res.ok) {
@@ -800,6 +708,7 @@ class QuorumApiService {
   public async deleteRelayMonitor(id: string): Promise<{ deleted: boolean; id: string }> {
     const res = await fetch(`${API_BASE}/relay/monitors/${encodeURIComponent(id)}`, {
       method: 'DELETE',
+      headers: this.adminHeaders(),
     });
     if (!res.ok) {
       const errBody = await res.json().catch(() => ({}));
@@ -812,6 +721,7 @@ class QuorumApiService {
   public async triggerRelayCheck(id: string): Promise<RelayCheck> {
     const res = await fetch(`${API_BASE}/relay/monitors/${encodeURIComponent(id)}/check`, {
       method: 'POST',
+      headers: this.adminHeaders(),
     });
     if (!res.ok) {
       const errBody = await res.json().catch(() => ({}));
@@ -854,7 +764,7 @@ class QuorumApiService {
   public async createLivingIncident(input: CreateLivingIncident): Promise<LivingIncidentResult> {
     const res = await fetch(`${API_BASE}/living/incidents`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...this.adminHeaders() },
       body: JSON.stringify(input),
     });
     if (!res.ok) {
@@ -865,15 +775,22 @@ class QuorumApiService {
   }
 
   public async reevaluateLivingReleases(): Promise<{ reevaluated: number; trust_degraded: number; assessments: LivingAssessment[] }> {
-    const res = await fetch(`${API_BASE}/living/re-evaluate`, { method: 'POST' });
+    const res = await fetch(`${API_BASE}/living/re-evaluate`, { method: 'POST', headers: this.adminHeaders() });
     if (!res.ok) throw new BackendError(`Status ${res.status}: Re-evaluation failed`, res.status, '/living/re-evaluate');
     return await res.json();
+  }
+
+  public async repairLivingIncidentChain(): Promise<{ repaired: boolean; message: string }> {
+    const res = await fetch(`${API_BASE}/living/repair-chain`, { method: 'POST', headers: this.adminHeaders() });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new BackendError(body.detail || `Status ${res.status}: Chain recovery failed`, res.status, '/living/repair-chain');
+    return body;
   }
 
   public async establishRelayBaseline(id: string, req: EstablishBaselineInput): Promise<ArtifactMonitor> {
     const res = await fetch(`${API_BASE}/relay/monitors/${encodeURIComponent(id)}/baseline`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...this.adminHeaders() },
       body: JSON.stringify(req),
     });
     if (!res.ok) {

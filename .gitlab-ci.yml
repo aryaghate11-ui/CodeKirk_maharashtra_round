@@ -1,0 +1,31 @@
+stages:
+  - build
+
+quorum-build-and-attest:
+  stage: build
+  image: golang:1.27.1-bookworm
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: on_success
+    - when: never
+  before_script:
+    - test -n "$QUORUM_BUILDER_PRIVATE_KEY_B64"
+    - test -n "$QUORUM_RELEASE_CHALLENGE_B64"
+    - apt-get update
+    - apt-get install -y --no-install-recommends python3 python3-venv ca-certificates git
+    - python3 -m venv .ci-venv
+    - . .ci-venv/bin/activate
+    - python -m pip install --disable-pip-version-check -r requirements.lock
+    - mkdir -p .quorum/keys builder-results
+    - printf '%s' "$QUORUM_BUILDER_PRIVATE_KEY_B64" | base64 --decode > .quorum/keys/gitlab-ci.pem
+    - printf '%s' "$QUORUM_RELEASE_CHALLENGE_B64" | base64 --decode > .quorum/release-challenge.json
+    - chmod 600 .quorum/keys/gitlab-ci.pem
+  script:
+    - . .ci-venv/bin/activate
+    - python -m builder.agent run --config configs/builders/gitlab-ci.json --challenge .quorum/release-challenge.json --key .quorum/keys/gitlab-ci.pem --output builder-results/gitlab-ci.json
+  artifacts:
+    name: quorum-gitlab-ci-evidence-$CI_PIPELINE_ID
+    paths:
+      - builder-results/gitlab-ci.json
+    expire_in: 7 days
+    when: on_success

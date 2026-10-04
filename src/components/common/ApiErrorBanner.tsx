@@ -31,7 +31,7 @@ export const ApiErrorBanner: React.FC<ApiErrorBannerProps> = ({
               Backend Connection Failure (Strict Verification Mode)
             </h4>
             <span className="text-[11px] font-mono text-quorum-red-light">
-              Mock fallback is disabled via <code className="bg-black/40 px-1 py-0.5 rounded text-white">VITE_DISABLE_MOCK=true</code>
+              Mock fallback is disabled by default. Real verification data is required.
             </span>
           </div>
         </div>

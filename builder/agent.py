@@ -9,6 +9,7 @@ import platform
 import shutil
 import subprocess
 import tempfile
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -19,6 +20,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 CONFIG_SCHEMA = "quorum.builder-config.v1"
 RECIPE_SCHEMA = "quorum.build-target.v1"
 RESULT_SCHEMA = "quorum.builder-result.v1"
+CHALLENGE_SCHEMA = "quorum.release-challenge.v1"
 REUSABLE_ATTESTATION_SCHEMA = "quorum.attestation.v2"
 CHALLENGE_ATTESTATION_SCHEMA = "quorum.attestation.v1"
 
@@ -51,6 +53,33 @@ def load_recipe(path: Path) -> dict:
     if len(commit) != 40 or any(character not in "0123456789abcdef" for character in commit):
         raise ValueError("source.commit must be a full lowercase 40-character Git commit")
     return recipe
+
+
+def load_challenge(path: Path) -> dict:
+    challenge = json.loads(path.read_text(encoding="utf-8"))
+    if challenge.get("schema_version") != CHALLENGE_SCHEMA:
+        raise ValueError(f"Expected {CHALLENGE_SCHEMA}")
+    try:
+        uuid.UUID(challenge["release_id"])
+    except (KeyError, TypeError, ValueError):
+        raise ValueError("challenge.release_id must be a UUID") from None
+    build_target = challenge.get("build_target")
+    if not isinstance(build_target, dict) or build_target.get("schema_version") != RECIPE_SCHEMA:
+        raise ValueError(f"challenge.build_target must be a {RECIPE_SCHEMA}")
+    expected_hash = challenge.get("recipe_sha256", "")
+    if len(expected_hash) != 64 or any(character not in "0123456789abcdef" for character in expected_hash):
+        raise ValueError("challenge.recipe_sha256 must be a lowercase SHA-256")
+    candidate_hash = challenge.get("candidate_sha256", "")
+    if len(candidate_hash) != 64 or any(character not in "0123456789abcdef" for character in candidate_hash):
+        raise ValueError("challenge.candidate_sha256 must be a lowercase SHA-256")
+    return challenge
+
+
+def apply_challenge(config: dict, challenge: dict) -> dict:
+    combined = apply_recipe(config, challenge["build_target"])
+    if recipe_sha256(combined) != challenge["recipe_sha256"]:
+        raise ValueError("Challenge build target does not match its recipe SHA-256")
+    return combined
 
 
 def apply_recipe(config: dict, recipe: dict) -> dict:
@@ -188,6 +217,7 @@ def build_release(
     keep_workdir: bool = False,
     tamper: bool = False,
     release_id: str | None = None,
+    challenge_sha256: str | None = None,
 ) -> dict:
     git_binary = shutil.which("git")
     go_binary = os.getenv("QUORUM_GO_BINARY") or shutil.which("go")
@@ -285,6 +315,8 @@ def build_release(
         }
         if release_id:
             result["release_id"] = release_id
+        if challenge_sha256:
+            result["challenge_sha256"] = challenge_sha256
         if keep_workdir:
             result["workspace"] = str(workspace)
         return result
@@ -312,6 +344,10 @@ def main() -> None:
                             help="Optional build target shared by independent operators")
     run_parser.add_argument("--release-id",
                             help="Bind the signature to a coordinator-created release challenge")
+    run_parser.add_argument(
+        "--challenge", type=Path,
+        help="Coordinator challenge JSON containing the release ID and exact build target",
+    )
     args = parser.parse_args()
 
     if args.command == "keygen":
@@ -320,7 +356,18 @@ def main() -> None:
         return
 
     config = load_config(args.config)
-    if args.recipe:
+    if args.challenge and (args.recipe or args.release_id):
+        parser.error("--challenge cannot be combined with --recipe or --release-id")
+    challenge_sha256 = None
+    release_id = args.release_id
+    if args.challenge:
+        challenge = load_challenge(args.challenge)
+        config = apply_challenge(config, challenge)
+        release_id = challenge["release_id"]
+        challenge_sha256 = hashlib.sha256(
+            canonical_json(challenge).encode()
+        ).hexdigest()
+    elif args.recipe:
         config = apply_recipe(config, load_recipe(args.recipe))
     if args.generate_key and not args.key.exists():
         generate_private_key(args.key)
@@ -331,7 +378,8 @@ def main() -> None:
         work_root=args.work_root,
         keep_workdir=args.keep_workdir,
         tamper=args.tamper,
-        release_id=args.release_id,
+        release_id=release_id,
+        challenge_sha256=challenge_sha256,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")

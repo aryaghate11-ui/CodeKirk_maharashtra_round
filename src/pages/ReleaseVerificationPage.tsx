@@ -29,7 +29,7 @@ import { WhyDecisionCard } from '../components/verification/WhyDecisionCard';
 import { ArtifactHashVerifier } from '../components/verification/ArtifactHashVerifier';
 import { VerificationProgressModal } from '../components/verification/VerificationProgressModal';
 import { ApiErrorBanner } from '../components/common/ApiErrorBanner';
-import { VerificationResult, Release } from '../types';
+import { VerificationResult, Release, ReleaseTrustSummary } from '../types';
 import { api } from '../services/api';
 import { truncateHash } from '../lib/utils';
 import { PageId } from '../components/layout/Sidebar';
@@ -39,24 +39,10 @@ interface ReleaseVerificationPageProps {
   onNavigate?: (page: PageId) => void;
 }
 
-interface TrustSignals {
-  living: string;
-  sentinel: string;
-  relay: string;
-  blockchain: string;
-}
-
-const emptySignals: TrustSignals = {
-  living: 'Not assessed',
-  sentinel: 'Not assessed',
-  relay: 'No monitor',
-  blockchain: 'Not anchored',
-};
-
 const signalTone = (value: string): 'green' | 'amber' | 'red' | 'slate' => {
-  if (/degraded|critical|high risk|mismatch|changed/i.test(value)) return 'red';
-  if (/verified|info risk|low risk|clear|match|anchored|active/i.test(value)) return 'green';
-  if (/pending|not assessed|not anchored|no monitor/i.test(value)) return 'amber';
+  if (/degraded|invalid|critical|high risk|mismatch|changed|rejected|failure/i.test(value)) return 'red';
+  if (/verified|info risk|low risk|clear|match|confirmed|active/i.test(value)) return 'green';
+  if (/pending|not assessed|not anchored|no monitor|checking|unconfirmed|recorded/i.test(value)) return 'amber';
   return 'slate';
 };
 
@@ -72,7 +58,7 @@ export const ReleaseVerificationPage: React.FC<ReleaseVerificationPageProps> = (
   const [allReleases, setAllReleases] = useState<Release[]>([]);
   const [selectedRelId, setSelectedRelId] = useState(selectedReleaseId);
   const [showTechnicalDetails, setShowTechnicalDetails] = useState(false);
-  const [signals, setSignals] = useState<TrustSignals>(emptySignals);
+  const [trustSummary, setTrustSummary] = useState<ReleaseTrustSummary | null>(null);
 
   useEffect(() => {
     if (selectedReleaseId) setSelectedRelId(selectedReleaseId);
@@ -83,37 +69,12 @@ export const ReleaseVerificationPage: React.FC<ReleaseVerificationPageProps> = (
     setIsLoading(true);
     setApiError(null);
     try {
-      const data = await api.getVerification(releaseId);
-      setVerification(data);
-
-      const [livingResult, sentinelResult, relayResult, auditResult] = await Promise.allSettled([
-        api.getLivingReleases(),
-        api.getSentinelComparisons(),
-        api.getRelayMonitors(),
-        api.getAudit(releaseId),
+      const [data, summary] = await Promise.all([
+        api.getVerification(releaseId),
+        api.getTrustSummary(releaseId),
       ]);
-      const living = livingResult.status === 'fulfilled'
-        ? livingResult.value.find((item) => item.release_id === releaseId)
-        : undefined;
-      const sentinel = sentinelResult.status === 'fulfilled'
-        ? sentinelResult.value.find((item) => item.target_commit === data.release.commit)
-        : undefined;
-      const monitors = relayResult.status === 'fulfilled'
-        ? relayResult.value.filter((item) => item.release_id === releaseId)
-        : [];
-      const relay = monitors.some((item) => item.last_result === 'MISMATCH')
-        ? 'Artifact mismatch'
-        : monitors.some((item) => item.last_result === 'MATCH')
-          ? 'Artifact matches'
-          : monitors.length
-            ? 'Monitoring active'
-            : 'No monitor';
-      setSignals({
-        living: living?.current_status.replace('_', ' ') || 'Not assessed',
-        sentinel: sentinel ? `${sentinel.risk_level} risk` : 'Not assessed',
-        relay,
-        blockchain: auditResult.status === 'fulfilled' && auditResult.value.anchored ? 'Anchored' : 'Not anchored',
-      });
+      setVerification(data);
+      setTrustSummary(summary);
     } catch (err: any) {
       setApiError(err);
     } finally {
@@ -148,7 +109,7 @@ export const ReleaseVerificationPage: React.FC<ReleaseVerificationPageProps> = (
   if (!verification) {
     return (
       <div className="space-y-5">
-        {apiError && <ApiErrorBanner error={apiError} endpoint="/releases/{id}" onRetry={() => loadVerification(selectedRelId)} />}
+        {apiError && <ApiErrorBanner error={apiError} endpoint="/releases/{id} or /trust-summary" onRetry={() => loadVerification(selectedRelId)} />}
         <div className="min-h-[360px] grid place-items-center text-center">
           {isLoading ? <div><div className="w-8 h-8 rounded-full border-2 border-quorum-green border-t-transparent animate-spin mx-auto" /><p className="mt-3 text-sm text-brand-muted">Loading real verification evidence…</p></div> : <p className="text-sm text-quorum-red-light">Verification engine unavailable.</p>}
         </div>
@@ -157,10 +118,10 @@ export const ReleaseVerificationPage: React.FC<ReleaseVerificationPageProps> = (
   }
 
   const { release, attestations, consensusHash, conflictDetected, decision } = verification;
-  const trustDegraded = signals.living === 'TRUST DEGRADED';
-  const status = trustDegraded ? 'TRUST DEGRADED' : decision === 'ACCEPTED' ? 'VERIFIED' : decision;
-  const installAllowed = decision === 'ACCEPTED' && !trustDegraded;
-  const statusTone: 'green' | 'amber' | 'red' = installAllowed ? 'green' : status === 'PENDING' ? 'amber' : 'red';
+  const status = trustSummary?.currentStatus || (decision === 'ACCEPTED' ? 'VERIFIED' : decision);
+  const recommendation = trustSummary?.overallRecommendation || 'REVIEW_REQUIRED';
+  const installAllowed = trustSummary?.installationAllowed ?? false;
+  const statusTone: 'green' | 'amber' | 'red' = installAllowed ? 'green' : recommendation === 'REVIEW_REQUIRED' ? 'amber' : 'red';
   const candidateMatches = consensusHash === release.publishedArtifactHash;
   const checks = [
     { label: 'Signatures valid', pass: verification.signaturesValid },
@@ -169,15 +130,16 @@ export const ReleaseVerificationPage: React.FC<ReleaseVerificationPageProps> = (
     { label: conflictDetected ? 'Builder conflict detected' : 'No builder conflicts', pass: !conflictDetected },
   ];
   const trustCards = [
-    { label: 'Living Verification', value: signals.living, icon: RefreshCcw, page: 'living' as PageId },
-    { label: 'Source Sentinel', value: signals.sentinel, icon: GitCompare, page: 'sentinel' as PageId },
-    { label: 'Quorum Relay', value: signals.relay, icon: Radio, page: 'relay' as PageId },
-    { label: 'Blockchain', value: signals.blockchain, icon: Link2, page: 'audit' as PageId },
+    { label: 'Artifact reproducibility', value: trustSummary?.artifactReproducibility.label || 'Checking…', icon: ShieldCheck, page: 'verification' as PageId },
+    { label: 'Source risk', value: trustSummary?.sourceSentinel.label || 'Checking…', icon: GitCompare, page: 'sentinel' as PageId },
+    { label: 'Distribution integrity', value: trustSummary?.relay.label || 'Checking…', icon: Radio, page: 'relay' as PageId },
+    { label: 'Current builder trust', value: trustSummary?.livingVerification.label || 'Checking…', icon: RefreshCcw, page: 'living' as PageId },
+    { label: 'Blockchain', value: trustSummary?.blockchain.label || 'Checking…', icon: Link2, page: 'audit' as PageId },
   ];
 
   return (
     <div className="space-y-5">
-      {apiError && <ApiErrorBanner error={apiError} endpoint="/releases/{id}" onRetry={() => loadVerification(selectedRelId)} />}
+      {apiError && <ApiErrorBanner error={apiError} endpoint="/releases/{id} or /trust-summary" onRetry={() => loadVerification(selectedRelId)} />}
 
       <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-4 rounded-xl border border-brand-border/70 bg-brand-panel/65 backdrop-blur-md p-4">
         <div className="min-w-0">
@@ -214,14 +176,14 @@ export const ReleaseVerificationPage: React.FC<ReleaseVerificationPageProps> = (
                 <div className={`p-3 rounded-xl border ${installAllowed ? 'bg-quorum-green-bg border-quorum-green-border' : status === 'PENDING' ? 'bg-quorum-amber-bg border-quorum-amber-border' : 'bg-quorum-red-bg border-quorum-red-border'}`}>
                   {installAllowed ? <ShieldCheck className="w-7 h-7 text-quorum-green" /> : status === 'PENDING' ? <Layers className="w-7 h-7 text-quorum-amber" /> : <ShieldAlert className="w-7 h-7 text-quorum-red" />}
                 </div>
-                <div><p className="text-xs text-brand-muted">Current trust decision</p><div className="mt-1"><Badge variant={statusTone} size="lg" dot>{status}</Badge></div></div>
+                <div><p className="text-xs text-brand-muted">Overall installation recommendation</p><div className="mt-1"><Badge variant={statusTone} size="lg" dot>{recommendation.replace(/_/g, ' ')}</Badge></div></div>
               </div>
 
               <h3 className="mt-5 text-xl sm:text-2xl font-bold text-white">
-                {installAllowed ? 'This release passed Quorum verification.' : 'Do not install this release yet.'}
+                {installAllowed ? 'This release is recommended for installation.' : recommendation === 'REVIEW_REQUIRED' ? 'The artifact matches, but security review is incomplete.' : 'Do not install this release.'}
               </h3>
               <p className="mt-2 text-sm text-brand-muted leading-relaxed max-w-2xl">
-                {trustDegraded ? 'The release was previously verified, but later builder trust information reduced its valid evidence below the required quorum.' : verification.explanation}
+                {trustSummary?.recommendationReason || verification.explanation}
               </p>
 
               <div className="mt-5 flex flex-wrap gap-3">
@@ -241,7 +203,7 @@ export const ReleaseVerificationPage: React.FC<ReleaseVerificationPageProps> = (
               </div>
               <div className={`mt-4 pt-4 border-t border-brand-border/70 flex items-center gap-2 text-sm font-semibold ${installAllowed ? 'text-quorum-green-light' : 'text-quorum-red-light'}`}>
                 {installAllowed ? <CheckCircle2 className="w-4 h-4" /> : <AlertTriangle className="w-4 h-4" />}
-                Installation {installAllowed ? 'allowed' : 'blocked'}
+                {installAllowed ? 'Installation recommended' : recommendation === 'REVIEW_REQUIRED' ? 'Manual review required' : 'Installation blocked'}
               </div>
             </div>
           </div>
@@ -265,7 +227,7 @@ export const ReleaseVerificationPage: React.FC<ReleaseVerificationPageProps> = (
 
       <section>
         <div className="mb-3 px-1"><h3 className="text-sm font-bold text-white">Security & trust</h3><p className="text-xs text-brand-muted mt-0.5">Supporting checks remain available without competing with the main decision.</p></div>
-        <div className="grid sm:grid-cols-2 xl:grid-cols-4 gap-3">
+        <div className="grid sm:grid-cols-2 xl:grid-cols-5 gap-3">
           {trustCards.map((item) => {
             const Icon = item.icon;
             return <button key={item.label} onClick={() => onNavigate?.(item.page)} className="text-left rounded-xl border border-brand-border/70 bg-brand-panel/65 p-4 hover:border-brand-border-bright transition-colors"><div className="flex items-center justify-between"><Icon className="w-4 h-4 text-brand-muted" /><ArrowRight className="w-3.5 h-3.5 text-brand-subtle" /></div><p className="mt-3 text-xs text-brand-muted">{item.label}</p><div className="mt-1"><Badge variant={signalTone(item.value)} size="sm" dot>{item.value}</Badge></div></button>;

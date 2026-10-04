@@ -1,138 +1,115 @@
-# Quorum real builder agent
+# Three independent Quorum builders
 
-The builder agent turns a pinned source commit into signed evidence. It does not trust a maintainer-provided binary.
+Quorum uses exactly these runtime identities:
 
-## What one builder does
+- `local-builder` — the coordinator operator's machine
+- `github-actions` — a GitHub-hosted Actions runner
+- `gitlab-ci` — a GitLab-hosted CI runner
 
-1. Reads a versioned build recipe.
-2. Checks that the installed compiler is exactly Go 1.27.1.
-3. Clones `rakyll/hey` and checks out commit `e64ec7a3ad1ef8bc828fe61e1fb324cc2e74c604` in a fresh directory.
-4. Builds `hey-linux-amd64` with a fixed target, disabled CGO, trimmed paths, disabled VCS stamping and an empty Go build ID.
-5. Computes the artifact SHA-256.
-6. Signs the source, recipe, environment and artifact hash with its own Ed25519 private key.
-7. Writes a portable JSON evidence file. The private key never appears in that file.
+Each identity owns a different Ed25519 private key. GitHub and GitLab never call
+the private LAN API. They download source, check out the pinned commit, build,
+hash, sign, and publish portable evidence JSON as a CI artifact. Only the
+coordinator imports those files into FastAPI.
 
-## One-time setup on each laptop
+## 1. One-time keys
 
-Use one of the laptop profiles on each independently controlled machine:
+Create the local key outside Git:
 
 ```powershell
-.venv\Scripts\python.exe -m builder.agent keygen --key .quorum\keys\laptop-one.pem
-.venv\Scripts\python.exe -m builder.agent run --config configs\builders\laptop-one.json --key .quorum\keys\laptop-one.pem --output builder-results\laptop-one.json
+.venv\Scripts\python.exe -m builder.agent keygen --key .quorum\keys\local-builder.pem
 ```
 
-On the second laptop, replace `laptop-one` with `laptop-two`. The `.quorum` and `builder-results` directories are excluded from Git.
-
-Copy only the three result JSON files to the coordinator. Register their public
-keys as pending without submitting attestations:
+Create the GitHub and GitLab keys on trusted machines, never in CI logs and never
+in the repository:
 
 ```powershell
-.venv\Scripts\python.exe scripts\submit_builder_results.py --register-only `
-  builder-results\github-actions.json `
-  builder-results\laptop-one.json `
-  builder-results\laptop-two.json
+.venv\Scripts\python.exe -m builder.agent keygen --key github-actions.pem
+.venv\Scripts\python.exe -m builder.agent keygen --key gitlab-ci.pem
 ```
 
-Registering a builder does not trust it. On the verifier host, inspect pending
-fingerprints and approve each expected key through the local administrator CLI:
+Base64-encode each CI PEM without adding line breaks. Store the GitHub key as the
+GitHub Actions secret `QUORUM_BUILDER_PRIVATE_KEY_B64`. Store the different
+GitLab key as the protected, masked GitLab CI/CD variable with the same name.
+
+## 2. Create one release challenge
+
+Start FastAPI, set the admin token printed by `start.ps1`, and use the publisher
+artifact obtained independently by the coordinator:
 
 ```powershell
-.venv\Scripts\python.exe scripts\manage_builder_trust.py list
-.venv\Scripts\python.exe scripts\manage_builder_trust.py approve `
-  --builder laptop-one `
-  --fingerprint REVIEWED_64_CHARACTER_SHA256 `
-  --reason "Verified with operator through a second channel"
-```
-
-The approval fails if the reviewed fingerprint differs from the registered key.
-Every registration, approval and revocation is added to a hash-chained trust log.
-After approving all expected builders, import their already-signed evidence
-without rebuilding it at the coordinator:
-
-```powershell
-.venv\Scripts\python.exe scripts\submit_builder_results.py builder-results\github-actions.json builder-results\laptop-one.json builder-results\laptop-two.json
-```
-
-For a real published release, also pass the consumer or publisher's independently
-calculated hash with `--candidate-sha256`. The API verifies every signature again
-before making its decision.
-
-## Stronger release-specific challenge
-
-For fresh participation proof, the coordinator first registers the publisher's
-candidate artifact and obtains a random release ID:
-
-```powershell
+$env:QUORUM_ADMIN_TOKEN = "TOKEN_PRINTED_BY_START_PS1"
 .venv\Scripts\python.exe scripts\create_release_challenge.py `
   --recipe configs\recipes\hey.json `
-  --candidate .\hey-linux-amd64
+  --candidate C:\path\to\publisher\hey-linux-amd64 `
+  --output builder-challenge.json
 ```
 
-Send the recipe path and returned release ID to each operator. Each operator runs:
+The challenge contains no private key. It binds all builders to the same random
+release ID, candidate SHA-256, exact source commit, and deterministic recipe.
+
+Base64-encode `builder-challenge.json`. Store it as the GitHub Actions secret and
+GitLab CI/CD variable `QUORUM_RELEASE_CHALLENGE_B64`. Replace this value for every
+new release challenge.
+
+## 3. Run the builders
+
+Local:
 
 ```powershell
 .venv\Scripts\python.exe -m builder.agent run `
-  --config configs\builders\laptop-one.json `
-  --recipe configs\recipes\hey.json `
-  --release-id RELEASE_UUID `
-  --key .quorum\keys\laptop-one.pem `
-  --output builder-results\laptop-one.json
+  --config configs\builders\local-builder.json `
+  --challenge builder-challenge.json `
+  --key .quorum\keys\local-builder.pem `
+  --output builder-results\local-builder.json
 ```
 
-The release ID, build time and observed environment are covered by the Ed25519
-signature, preventing evidence from another verification round being replayed.
-Import the results into the existing release:
+GitHub: open **Actions → Quorum reproducible builder → Run workflow**. Download
+the `quorum-github-actions-evidence` artifact and extract
+`github-actions.json` into `builder-results`.
+
+GitLab: mirror/push the same commit to a GitLab project, open **Build → Pipelines
+→ Run pipeline**, and download the `quorum-build-and-attest` job artifact.
+Extract `gitlab-ci.json` into `builder-results`.
+
+## 4. Register and approve keys
+
+Registration is pending by default. Import public identities with the local admin
+token:
 
 ```powershell
-.venv\Scripts\python.exe scripts\submit_builder_results.py `
-  --release-id RELEASE_UUID `
-  builder-results\github-actions.json `
-  builder-results\laptop-one.json `
-  builder-results\laptop-two.json
+.venv\Scripts\python.exe scripts\run_three_builders.py `
+  --local builder-results\local-builder.json `
+  --github builder-results\github-actions.json `
+  --gitlab builder-results\gitlab-ci.json `
+  --register-only
 ```
 
-## Multi-package artifact integrity
-
-Versioned recipes cover three real open-source applications: `rakyll/hey`,
-`junegunn/fzf`, and `zyedidia/micro`. Each pins the full commit, Go toolchain,
-target, environment and deterministic build flags.
+Review each fingerprint with its operator through a separate channel, then approve:
 
 ```powershell
-$env:QUORUM_GO_BINARY = ".quorum\toolchains\go\bin\go.exe"
-.venv\Scripts\python.exe scripts\test_package_matrix.py
+.venv\Scripts\python.exe scripts\manage_builder_trust.py list
+.venv\Scripts\python.exe scripts\manage_builder_trust.py approve --builder local-builder --fingerprint REVIEWED_SHA256 --reason "Key verified out of band"
+.venv\Scripts\python.exe scripts\manage_builder_trust.py approve --builder github-actions --fingerprint REVIEWED_SHA256 --reason "GitHub key verified out of band"
+.venv\Scripts\python.exe scripts\manage_builder_trust.py approve --builder gitlab-ci --fingerprint REVIEWED_SHA256 --reason "GitLab key verified out of band"
 ```
 
-This runs two clean builds per package and writes
-`builder-results/package-matrix.json`. Network/build errors are recorded as
-errors, never as hash disagreements.
-
-## GitHub Actions witness
-
-The workflow in `.github/workflows/quorum-builder.yml` is manually triggered and uses only free, open-source tooling. Its inputs select a pinned recipe and optional release-specific challenge. Generate a GitHub witness key once, base64-encode the PEM file, and store it as the repository secret `QUORUM_BUILDER_PRIVATE_KEY_B64`. The workflow publishes `github-actions.json` as its run artifact.
-
-Do not reuse a laptop key for GitHub Actions. A separate key is what makes the witness independently attributable.
-
-## Local end-to-end proof
-
-With the API running at `http://127.0.0.1:8000`, run:
+## 5. Import signed evidence
 
 ```powershell
-.venv\Scripts\python.exe scripts\run_three_builders.py --approve-local-builders
+.venv\Scripts\python.exe scripts\run_three_builders.py `
+  --local builder-results\local-builder.json `
+  --github builder-results\github-actions.json `
+  --gitlab builder-results\gitlab-ci.json
 ```
 
-The command creates three local keys on first use, executes three isolated builds, registers the public keys, creates a release, submits all three signed attestations and saves `quorum-summary.json`.
+The importer refuses missing/extra identities, duplicate operators, different
+challenges, source commits, recipes, release IDs, or registry-key fingerprints.
+FastAPI then reconstructs the signed payload, verifies Ed25519, applies the saved
+quorum policy, records the audit chain, and exposes the decision to the website.
 
-Run the attack case with:
+## Honest scope
 
-```powershell
-.venv\Scripts\python.exe scripts\run_three_builders.py --approve-local-builders --tamper-builder laptop-two
-```
-
-The selected builder signs its changed hash honestly. Quorum detects that the hashes disagree and returns `disagreement` because the policy rejects any conflict.
-
-## Honest decentralization claim
-
-Three isolated runs on one laptop are useful protocol evidence, but they are not three independent operators. The deployable topology is one GitHub Actions witness plus two different laptops, each with a different private key. Quorum also requires distinct operator names among the matching builders before it accepts a release.
-
-Operator names are self-declared in this MVP. A production deployment should
-approve builder public keys through an organization policy or transparency registry.
+A configuration or local test cannot prove that hosted CI actually ran. Downloaded
+GitHub and GitLab artifacts from successful hosted jobs are the operational proof.
+The website shows only registered runtime identities and backend decisions; absent
+evidence remains `PENDING`.

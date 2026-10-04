@@ -25,9 +25,9 @@ The SQLite database is created at `backend/data/quorum.db` and is intentionally 
 - Valid, tampered and builder-conflict demonstrations
 - Versioned API contract shared by the FastAPI backend and React frontend
 - Consumer-side SHA-256 hashing (the selected file never leaves the browser)
-- Static fallback mode for the hosted dashboard
+- Fail-closed frontend verification with no runtime mock-data fallback
 - Real pinned-commit Go builder agent with isolated workspaces
-- Three separately keyed builder profiles and GitHub Actions witness workflow
+- Three separately keyed builders: local, GitHub Actions, and GitLab CI
 - Release-specific builder challenges that prevent cross-release attestation replay
 - Fingerprint-approved builder trust with hash-chained approval/revocation history
 - Pinned reproducibility recipes for `hey`, `fzf`, and `micro`
@@ -36,24 +36,21 @@ The SQLite database is created at `backend/data/quorum.db` and is intentionally 
 - Downloadable audit passport with offline signature, policy and hash-chain verification
 - Fail-closed installation gate that runs an installer only after signed quorum verification
 - Whole-database integrity scan with separate local/private and public-anchor status
+- Fail-closed installation recommendations that separate reproducibility, source review, distribution monitoring and current builder trust
+- Administrator-token protection for security-sensitive mutation endpoints
 
-The demo builder keys are deterministic and exist only to demonstrate the end-to-end signature flow. Real builders must use separately generated private keys stored outside the repository.
+Synthetic Attack Lab keys are isolated from normal runtime builder/release APIs. Real builders use separately generated private keys stored outside the repository.
+
+Builder cards distinguish seeded demo identities, local isolated workspaces,
+hosted runners and explicitly declared physically independent builders. Quorum
+does not infer physical or operator independence from a key or attestation.
 
 ## Run the real three-builder proof
 
-Install the pinned Go `1.27.1` toolchain, start Quorum with `start.ps1`, then open a second PowerShell window:
-
-```powershell
-.venv\Scripts\python.exe scripts\run_three_builders.py --approve-local-builders
-```
-
-To prove disagreement handling with real signed evidence:
-
-```powershell
-.venv\Scripts\python.exe scripts\run_three_builders.py --approve-local-builders --tamper-builder laptop-two
-```
-
-This local command uses three fresh workspaces and three separate signing keys on one host. It proves the protocol, reproducibility, signature checks, quorum decision, and conflict detection. To claim real operational decentralization, run the three profiles on GitHub Actions and two independently controlled laptops as described in `docs/BUILDER_AGENT.md`.
+Install the pinned Go `1.27.1` toolchain and follow
+`docs/BUILDER_AGENT.md`. The coordinator creates one challenge; `local-builder`,
+`github-actions`, and `gitlab-ci` independently produce signed JSON evidence; the
+coordinator imports all three artifacts into the existing FastAPI verifier.
 
 To run two fresh builds of every package recipe and compare their SHA-256 values:
 
@@ -86,6 +83,7 @@ Setup, deployment and offline verification commands are documented in
 - `POST /api/v1/demo/verify`
 - `GET /api/v1/releases`
 - `GET /api/v1/releases/{release_id}`
+- `GET /api/v1/releases/{release_id}/trust-summary`
 - `POST /api/v1/releases/{release_id}/consumer-verifications`
 - `GET /api/v1/releases/{release_id}/integrity`
 - `GET /api/v1/integrity`
@@ -96,6 +94,16 @@ v1 request and response contract is documented in `docs/API_CONTRACT_V1.md`.
 
 The automatic installation gate and independent public-anchor checks are
 documented in `docs/RELEASE_GATE.md`.
+
+## Frontend data safety
+
+The frontend always fails closed: if FastAPI is unavailable, it displays an error
+and never substitutes mock verification evidence. Attack Lab fixtures are clearly
+labelled synthetic backend exercises and never appear in normal release or builder lists.
+
+`start.ps1` prints a generated local administrator token. Use **Admin locked**
+in the header to unlock protected actions for the current browser tab. The
+token is held in session storage and sent only in `X-Quorum-Admin-Token`.
 
 ## Test
 

@@ -28,8 +28,8 @@ export const QuorumSummaryCard: React.FC<QuorumSummaryCardProps> = ({ verificati
     >
       <div>
         <CardHeader
-          title="Quorum Decision Engine"
-          subtitle="Cryptographic consensus evaluation"
+          title="Original Quorum Decision"
+          subtitle="Historical cryptographic consensus evaluation"
           icon={<Scale className="w-4 h-4 text-quorum-green" />}
           badge={<DecisionBadge decision={decision} size="sm" />}
         />
@@ -156,7 +156,7 @@ export const QuorumSummaryCard: React.FC<QuorumSummaryCardProps> = ({ verificati
           )}
           <div>
             <span className="text-xs uppercase font-mono tracking-wider opacity-80 block">
-              Final Decision
+              Original Release Decision
             </span>
             <span className="text-base font-bold tracking-tight text-white">
               RELEASE {decision}

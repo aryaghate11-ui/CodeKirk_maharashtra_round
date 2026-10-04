@@ -1,10 +1,10 @@
 {
   "schema_version": "quorum.builder-config.v1",
   "builder": {
-    "id": "laptop-two",
-    "name": "Laptop Two Witness",
-    "operator": "Laptop Two",
-    "runtime": "native-windows"
+    "id": "gitlab-ci",
+    "name": "GitLab CI Builder",
+    "operator": "GitLab CI",
+    "runtime": "gitlab-hosted-runner"
   },
   "source": {
     "repository_url": "https://github.com/rakyll/hey",

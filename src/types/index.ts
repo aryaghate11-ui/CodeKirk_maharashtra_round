@@ -1,6 +1,6 @@
 export type VerificationDecision = 'ACCEPTED' | 'REJECTED' | 'CONFLICT' | 'PENDING';
 
-export type BuilderStatus = 'ONLINE' | 'DEGRADED' | 'OFFLINE' | 'PENDING_APPROVAL';
+export type BuilderStatus = 'REGISTERED' | 'PENDING_APPROVAL' | 'APPROVED' | 'ATTESTED' | 'COMPROMISED';
 export type AttestationStatus = 'MATCH' | 'CONFLICT' | 'INVALID_SIG' | 'PENDING';
 
 export interface QuorumPolicy {
@@ -42,13 +42,40 @@ export interface Builder {
   region: string;
   status: BuilderStatus;
   trusted: boolean;
-  uptime: number; // percentage
-  latestAttestationTime: string;
-  lastArtifactHash: string;
-  signatureStatus: 'VALID' | 'INVALID';
+  uptime: number | null;
+  latestAttestationTime: string | null;
+  lastArtifactHash: string | null;
+  signatureStatus: 'VALID' | 'INVALID' | 'NOT_ATTESTED';
+  livenessStatus: 'UNKNOWN';
+  deploymentClass: 'DEMO_IDENTITY' | 'LOCAL_ISOLATED' | 'HOSTED_RUNNER' | 'PHYSICALLY_INDEPENDENT';
+  independenceVerified: boolean;
+  independenceEvidence: string;
   totalBuilds: number;
   agreementRate: number; // percentage
   verifiedByContract: boolean;
+}
+
+export interface TrustLayerSummary {
+  status: string;
+  label: string;
+  reason: string;
+  assessed: boolean;
+}
+
+export interface ReleaseTrustSummary {
+  schemaVersion: 'quorum.trust-summary.v1';
+  releaseId: string;
+  historicalStatus: string;
+  currentStatus: string;
+  installationAllowed: boolean;
+  decisionReason: string;
+  overallRecommendation: 'INSTALL_RECOMMENDED' | 'REVIEW_REQUIRED' | 'DO_NOT_INSTALL';
+  recommendationReason: string;
+  artifactReproducibility: TrustLayerSummary;
+  livingVerification: TrustLayerSummary;
+  sourceSentinel: TrustLayerSummary;
+  relay: TrustLayerSummary;
+  blockchain: TrustLayerSummary;
 }
 
 export interface Attestation {

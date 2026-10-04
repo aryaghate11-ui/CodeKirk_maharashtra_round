@@ -19,7 +19,7 @@ import { Badge } from '../components/common/Badge';
 import { RecentReleasesTable } from '../components/dashboard/RecentReleasesTable';
 import { ActivityTimeline } from '../components/dashboard/ActivityTimeline';
 import { ApiErrorBanner } from '../components/common/ApiErrorBanner';
-import { Release, SystemStats, AuditEvent } from '../types';
+import { Release, SystemStats, AuditEvent, ReleaseTrustSummary } from '../types';
 import { api } from '../services/api';
 import { truncateHash } from '../lib/utils';
 import { PageId } from '../components/layout/Sidebar';
@@ -29,24 +29,10 @@ interface DashboardPageProps {
   onSelectRelease: (releaseId: string) => void;
 }
 
-interface TrustSignals {
-  living: string;
-  sentinel: string;
-  relay: string;
-  blockchain: string;
-}
-
-const initialSignals: TrustSignals = {
-  living: 'Checking…',
-  sentinel: 'Checking…',
-  relay: 'Checking…',
-  blockchain: 'Checking…',
-};
-
 const signalTone = (value: string): 'green' | 'amber' | 'red' | 'slate' => {
-  if (/degraded|critical|high risk|mismatch|changed/i.test(value)) return 'red';
-  if (/pending|not assessed|not anchored|no monitor|checking/i.test(value)) return 'amber';
-  if (/verified|clear|match|anchored|active|info risk|low risk/i.test(value)) return 'green';
+  if (/degraded|invalid|critical|high risk|mismatch|changed|rejected|failure/i.test(value)) return 'red';
+  if (/pending|not assessed|not anchored|no monitor|checking|unconfirmed|recorded/i.test(value)) return 'amber';
+  if (/verified|clear|match|confirmed|active|info risk|low risk/i.test(value)) return 'green';
   return 'slate';
 };
 
@@ -54,7 +40,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate, onSele
   const [releases, setReleases] = useState<Release[]>([]);
   const [events, setEvents] = useState<AuditEvent[]>([]);
   const [stats, setStats] = useState<SystemStats | null>(null);
-  const [signals, setSignals] = useState<TrustSignals>(initialSignals);
+  const [trustSummary, setTrustSummary] = useState<ReleaseTrustSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [apiError, setApiError] = useState<Error | string | null>(null);
 
@@ -70,42 +56,16 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate, onSele
       const latest = releaseData[0];
       if (!latest) {
         setEvents([]);
-        setSignals({ living: 'No release', sentinel: 'No release', relay: 'No release', blockchain: 'No release' });
+        setTrustSummary(null);
         return;
       }
 
-      const [eventResult, livingResult, sentinelResult, relayResult, auditResult] = await Promise.allSettled([
+      const [eventResult, summary] = await Promise.all([
         api.getAuditEvents(latest.id),
-        api.getLivingReleases(),
-        api.getSentinelComparisons(),
-        api.getRelayMonitors(),
-        api.getAudit(latest.id),
+        api.getTrustSummary(latest.id),
       ]);
-      setEvents(eventResult.status === 'fulfilled' ? eventResult.value : []);
-
-      const living = livingResult.status === 'fulfilled'
-        ? livingResult.value.find((item) => item.release_id === latest.id)
-        : undefined;
-      const sentinel = sentinelResult.status === 'fulfilled'
-        ? sentinelResult.value.find((item) => item.target_commit === latest.commit)
-        : undefined;
-      const monitors = relayResult.status === 'fulfilled'
-        ? relayResult.value.filter((item) => item.release_id === latest.id)
-        : [];
-      const relayValue = monitors.some((item) => item.last_result === 'MISMATCH')
-        ? 'Artifact mismatch'
-        : monitors.some((item) => item.last_result === 'MATCH')
-          ? 'Artifact matches'
-          : monitors.length
-            ? 'Monitoring active'
-            : 'No monitor';
-
-      setSignals({
-        living: living?.current_status.replace('_', ' ') || 'Not assessed',
-        sentinel: sentinel ? `${sentinel.risk_level} risk` : 'Not assessed',
-        relay: relayValue,
-        blockchain: auditResult.status === 'fulfilled' && auditResult.value.anchored ? 'Anchored' : 'Not anchored',
-      });
+      setEvents(eventResult);
+      setTrustSummary(summary);
     } catch (err: any) {
       setApiError(err);
     } finally {
@@ -116,24 +76,26 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate, onSele
   useEffect(() => { void loadData(); }, []);
 
   const currentRelease = releases[0];
-  const trustDegraded = signals.living === 'TRUST DEGRADED';
-  const effectiveStatus = trustDegraded ? 'TRUST DEGRADED' : currentRelease?.status || 'PENDING';
-  const installationAllowed = effectiveStatus === 'ACCEPTED';
-  const decisionTone = installationAllowed ? 'green' : effectiveStatus === 'PENDING' ? 'amber' : 'red';
-  const decisionReason = trustDegraded
-    ? 'New trust information means the original builder evidence no longer satisfies the required quorum.'
-    : currentRelease?.decisionExplanation || 'Quorum is waiting for enough independently signed build evidence.';
+  const effectiveStatus = trustSummary?.currentStatus || (currentRelease?.status === 'ACCEPTED' ? 'VERIFIED' : currentRelease?.status) || 'PENDING';
+  const recommendation = trustSummary?.overallRecommendation || 'REVIEW_REQUIRED';
+  const installationAllowed = trustSummary?.installationAllowed ?? false;
+  const decisionTone = installationAllowed ? 'green' : recommendation === 'REVIEW_REQUIRED' ? 'amber' : 'red';
+  const decisionReason = trustSummary?.recommendationReason
+    || currentRelease?.decisionExplanation
+    || 'Quorum is waiting for enough independently signed build evidence.';
+  const unavailableTrustLabel = loading ? 'Checking…' : 'No release evidence';
 
   const trustCards = [
-    { label: 'Living Verification', value: signals.living, icon: RefreshCcw, page: 'living' as PageId },
-    { label: 'Source Sentinel', value: signals.sentinel, icon: GitCompare, page: 'sentinel' as PageId },
-    { label: 'Quorum Relay', value: signals.relay, icon: Radio, page: 'relay' as PageId },
-    { label: 'Blockchain', value: signals.blockchain, icon: Link2, page: 'audit' as PageId },
+    { label: 'Artifact reproducibility', value: trustSummary?.artifactReproducibility.label || unavailableTrustLabel, icon: ShieldCheck, page: 'verification' as PageId },
+    { label: 'Source risk', value: trustSummary?.sourceSentinel.label || unavailableTrustLabel, icon: GitCompare, page: 'sentinel' as PageId },
+    { label: 'Distribution integrity', value: trustSummary?.relay.label || unavailableTrustLabel, icon: Radio, page: 'relay' as PageId },
+    { label: 'Current builder trust', value: trustSummary?.livingVerification.label || unavailableTrustLabel, icon: RefreshCcw, page: 'living' as PageId },
+    { label: 'Blockchain', value: trustSummary?.blockchain.label || unavailableTrustLabel, icon: Link2, page: 'audit' as PageId },
   ];
 
   return (
     <div className="space-y-5">
-      {apiError && <ApiErrorBanner error={apiError} endpoint="/releases or /stats" onRetry={loadData} />}
+      {apiError && <ApiErrorBanner error={apiError} endpoint="/releases, /stats, or /trust-summary" onRetry={loadData} />}
 
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 px-1">
         <p className="text-sm text-brand-muted max-w-2xl">
@@ -161,10 +123,10 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate, onSele
 
                 <div className="mt-5 flex flex-wrap items-center gap-3">
                   <Badge variant={decisionTone} size="lg" dot pulse={effectiveStatus === 'PENDING'}>
-                    {effectiveStatus === 'ACCEPTED' ? 'VERIFIED' : effectiveStatus}
+                    {recommendation.replace(/_/g, ' ')}
                   </Badge>
-                  <span className={`text-sm font-semibold ${installationAllowed ? 'text-quorum-green-light' : 'text-quorum-red-light'}`}>
-                    {installationAllowed ? 'Installation allowed' : 'Installation blocked'}
+                  <span className={`text-sm font-semibold ${effectiveStatus === 'VERIFIED' ? 'text-quorum-green-light' : 'text-quorum-red-light'}`}>
+                    Artifact reproducibility: {effectiveStatus.replace(/_/g, ' ')}
                   </span>
                 </div>
                 <p className="mt-3 text-sm text-brand-muted leading-relaxed max-w-2xl">{decisionReason}</p>
@@ -189,7 +151,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate, onSele
                   <span className="text-lg text-brand-muted mb-1">of {currentRelease.totalBuilders}</span>
                 </div>
                 <div className="mt-3 h-2 rounded-full bg-brand-panel-elevated overflow-hidden">
-                  <div className={`h-full ${installationAllowed ? 'bg-quorum-green' : 'bg-quorum-amber'}`} style={{ width: `${currentRelease.totalBuilders ? (currentRelease.agreement / currentRelease.totalBuilders) * 100 : 0}%` }} />
+                  <div className={`h-full ${effectiveStatus === 'VERIFIED' ? 'bg-quorum-green' : 'bg-quorum-amber'}`} style={{ width: `${currentRelease.totalBuilders ? (currentRelease.agreement / currentRelease.totalBuilders) * 100 : 0}%` }} />
                 </div>
                 <p className="mt-3 text-xs text-brand-muted">
                   Required policy: {currentRelease.policy.k} of {currentRelease.policy.n} matching builders
@@ -209,9 +171,9 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate, onSele
 
       <section>
         <div className="flex items-center justify-between mb-3 px-1">
-          <div><h3 className="text-sm font-bold text-white">Security & trust</h3><p className="text-xs text-brand-muted mt-0.5">Four checks that support the current release decision.</p></div>
+          <div><h3 className="text-sm font-bold text-white">Security & trust</h3><p className="text-xs text-brand-muted mt-0.5">Independent claims that support the overall recommendation.</p></div>
         </div>
-        <div className="grid sm:grid-cols-2 xl:grid-cols-4 gap-3">
+        <div className="grid sm:grid-cols-2 xl:grid-cols-5 gap-3">
           {trustCards.map((item) => {
             const Icon = item.icon;
             const tone = signalTone(item.value);

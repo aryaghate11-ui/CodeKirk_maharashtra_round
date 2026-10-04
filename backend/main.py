@@ -16,13 +16,14 @@ from typing import Literal
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, HttpUrl, model_validator
 
 from backend import blockchain
+from backend.auth import require_admin
 from backend.policy import QuorumPolicy, decide
 from backend.sentinel import sentinel_router, init_sentinel_db
 from backend.relay import relay_router, init_relay_db, start_relay_scheduler, stop_relay_scheduler
@@ -46,6 +47,7 @@ GOOD_ARTIFACT_SHA256 = "73bc91e478f14385f0a8fcd3388af75e0d7e0558fd9e343f59025a04
 BAD_ARTIFACT_SHA256 = "badd09f10e8f9315c7c9e649a535311185f922c154a2ca58048c2ba5d42277c2"
 ATTESTATION_SCHEMA = "quorum.attestation.v1"
 REAL_ATTESTATION_SCHEMA = "quorum.attestation.v2"
+RUNTIME_BUILDER_IDS = ("local-builder", "github-actions", "gitlab-ci")
 
 
 def utc_now() -> str:
@@ -189,7 +191,6 @@ def init_db() -> None:
         init_sentinel_db(db)
         init_relay_db(db)
         init_living_db(db)
-    seed_demo_builders()
 
 
 def demo_private_key(builder_id: str) -> Ed25519PrivateKey:
@@ -388,8 +389,37 @@ class BuilderRegistryResponse(BaseModel):
     created_at: str
     latest_artifact_sha256: str | None
     latest_attestation_at: str | None
+    latest_signature_valid: bool | None
     total_builds: int
     agreement_rate: float
+    evidence_status: Literal["REGISTERED", "PENDING_APPROVAL", "APPROVED", "ATTESTED", "COMPROMISED"]
+    liveness_status: Literal["UNKNOWN"] = "UNKNOWN"
+    deployment_class: Literal["DEMO_IDENTITY", "LOCAL_ISOLATED", "HOSTED_RUNNER", "PHYSICALLY_INDEPENDENT"]
+    independence_verified: bool
+    independence_evidence: str
+
+
+class TrustLayerResponse(BaseModel):
+    status: str
+    label: str
+    reason: str
+    assessed: bool
+
+
+class ReleaseTrustSummaryResponse(BaseModel):
+    schema_version: Literal["quorum.trust-summary.v1"] = "quorum.trust-summary.v1"
+    release_id: str
+    historical_status: str
+    current_status: str
+    installation_allowed: bool
+    decision_reason: str
+    overall_recommendation: Literal["INSTALL_RECOMMENDED", "REVIEW_REQUIRED", "DO_NOT_INSTALL"]
+    recommendation_reason: str
+    artifact_reproducibility: TrustLayerResponse
+    living_verification: TrustLayerResponse
+    source_sentinel: TrustLayerResponse
+    relay: TrustLayerResponse
+    blockchain: TrustLayerResponse
 
 
 class DemoRequest(BaseModel):
@@ -809,6 +839,249 @@ def get_blockchain_anchor(release_id: str) -> dict | None:
     return dict(row) if row else None
 
 
+def blockchain_record_for_release(release_id: str, evidence_sha256: str) -> dict:
+    """Return one canonical description of the stored and on-chain anchor state."""
+    anchor = get_blockchain_anchor(release_id)
+    if not anchor:
+        return {"anchored": False, "on_chain_match": None, "independent_public_anchor": False}
+
+    record: dict = {
+        "anchored": True,
+        "chain_id": anchor["chain_id"],
+        "contract_address": anchor["contract_address"],
+        "transaction_hash": anchor["transaction_hash"],
+        "block_number": anchor["block_number"],
+        "gas_used": anchor["gas_used"],
+        "release_id_hash": anchor["release_id_hash"],
+        "submitter": anchor["submitter"],
+        "anchored_at": anchor["anchored_at"],
+        "network": blockchain.network_name(anchor["chain_id"]),
+        "anchor_scope": "public-network" if blockchain.is_public_chain(anchor["chain_id"]) else "local-or-private-network",
+        "independent_public_anchor": False,
+        "on_chain_match": None,
+    }
+    config = blockchain.load_config()
+    config_matches = bool(
+        config
+        and config.chain_id == anchor["chain_id"]
+        and config.contract_address.lower() == anchor["contract_address"].lower()
+    )
+    if config_matches:
+        record["get_anchor_selector"] = config.get_anchor_selector
+    try:
+        on_chain = blockchain.read_anchor(config, release_id) if config_matches else None
+        record["on_chain_match"] = bool(
+            on_chain
+            and on_chain["evidence_sha256"] == evidence_sha256
+            and on_chain["release_id_hash"] == anchor["release_id_hash"]
+        ) if config_matches else None
+        record["independent_public_anchor"] = bool(
+            record["on_chain_match"] and blockchain.is_public_chain(anchor["chain_id"])
+        )
+    except blockchain.BlockchainError:
+        record["on_chain_match"] = None
+    return record
+
+
+def build_release_trust_summary(release_id: str) -> dict:
+    """Combine every trust layer into one fail-closed release view for all clients."""
+    verification = get_release_record(release_id)
+    release = verification["release"]
+    assessment = reassess_release(release_id)
+    incident_chain = verify_incident_chain()
+
+    living_status = assessment["current_status"]
+    living_label = living_status.replace("_", " ")
+    living_reason = assessment["reason"]
+    if not incident_chain["valid"]:
+        living_status = "INTEGRITY_FAILURE"
+        living_label = "Incident chain invalid"
+        living_reason = "; ".join(incident_chain["errors"]) or "Living Verification incident history failed integrity verification."
+
+    with connect() as db:
+        sentinel = db.execute(
+            """
+            SELECT id, risk_level, review_status, created_at
+            FROM source_comparisons
+            WHERE repository_url = ? AND target_commit = ?
+            ORDER BY rowid DESC LIMIT 1
+            """,
+            (release["repository_url"], release["source_commit"]),
+        ).fetchone()
+        relay_rows = db.execute(
+            """
+            SELECT last_result, enabled, last_checked_at, last_error_summary
+            FROM artifact_monitors WHERE release_id = ? ORDER BY created_at DESC
+            """,
+            (release_id,),
+        ).fetchall()
+
+    if sentinel:
+        sentinel_status = f"{sentinel['risk_level']}_RISK"
+        sentinel_layer = {
+            "status": sentinel_status,
+            "label": f"{sentinel['risk_level']} risk",
+            "reason": f"Source Sentinel comparison {sentinel['id']} is {sentinel['review_status'].lower()}.",
+            "assessed": True,
+        }
+    else:
+        sentinel_layer = {
+            "status": "NOT_ASSESSED",
+            "label": "Not assessed",
+            "reason": "No Source Sentinel comparison is bound to this repository and commit.",
+            "assessed": False,
+        }
+
+    relay_results = [row["last_result"] or "PENDING" for row in relay_rows]
+    if not relay_rows:
+        relay_layer = {
+            "status": "NO_MONITOR",
+            "label": "No monitor",
+            "reason": "No Quorum Relay monitor is bound to this release.",
+            "assessed": False,
+        }
+    else:
+        relay_status = (
+            "MISMATCH" if "MISMATCH" in relay_results else
+            "ERROR" if "ERROR" in relay_results else
+            "PENDING" if "PENDING" in relay_results else
+            "MATCH"
+        )
+        relay_layer = {
+            "status": relay_status,
+            "label": {
+                "MATCH": "Distribution matches",
+                "MISMATCH": "Distribution mismatch",
+                "ERROR": "Monitor error",
+                "PENDING": "Check pending",
+            }[relay_status],
+            "reason": f"{len(relay_rows)} release monitor(s); observed states: {', '.join(sorted(set(relay_results)))}.",
+            "assessed": relay_status in {"MATCH", "MISMATCH"},
+        }
+
+    anchor = get_blockchain_anchor(release_id)
+    blockchain_record = blockchain_record_for_release(
+        release_id,
+        anchor["evidence_sha256"] if anchor else "",
+    )
+    if not blockchain_record["anchored"]:
+        blockchain_layer = {
+            "status": "NOT_ANCHORED",
+            "label": "Not anchored",
+            "reason": "No blockchain anchor has been recorded for this release.",
+            "assessed": False,
+        }
+    elif blockchain_record["on_chain_match"] is False:
+        blockchain_layer = {
+            "status": "ANCHOR_MISMATCH",
+            "label": "Anchor mismatch",
+            "reason": "The stored evidence does not match the configured blockchain record.",
+            "assessed": True,
+        }
+    elif blockchain_record["on_chain_match"] is True:
+        is_public = blockchain_record["anchor_scope"] == "public-network"
+        blockchain_layer = {
+            "status": "CONFIRMED_PUBLIC" if is_public else "CONFIRMED_LOCAL",
+            "label": "Confirmed publicly" if is_public else "Confirmed on local Anvil",
+            "reason": f"Evidence matches the recorded transaction on {blockchain_record['network']}.",
+            "assessed": True,
+        }
+    else:
+        blockchain_layer = {
+            "status": "RECORDED_UNCONFIRMED",
+            "label": "Recorded · chain unavailable",
+            "reason": "An anchor receipt is stored, but the configured chain is currently unavailable for confirmation.",
+            "assessed": True,
+        }
+
+    current_status = living_status
+    anchor_integrity_failed = blockchain_layer["status"] == "ANCHOR_MISMATCH"
+    consensus_sha256 = verification["consensus_sha256"]
+    matching_builders = sum(
+        1 for builder in verification["builders"]
+        if consensus_sha256 and builder["artifact_sha256"] == consensus_sha256
+    )
+    total_builders = len(verification["builders"])
+    quorum_reason = {
+        "verified": f"{matching_builders} of {total_builders} signed builder results match the release artifact.",
+        "disagreement": "Trusted builders produced conflicting artifact hashes.",
+        "rejected": "The available signed evidence does not satisfy this release policy.",
+        "pending": "More independent signed evidence is required before this release can be trusted.",
+    }[verification["status"]]
+    reproducibility_verified = (
+        current_status == "VERIFIED"
+        and verification["status"] == "verified"
+        and incident_chain["valid"]
+        and not anchor_integrity_failed
+    )
+    if not incident_chain["valid"]:
+        decision_reason = living_reason
+    elif anchor_integrity_failed:
+        current_status = "INTEGRITY_FAILURE"
+        decision_reason = blockchain_layer["reason"]
+    elif current_status != verification["status"].upper():
+        decision_reason = living_reason
+    else:
+        decision_reason = quorum_reason
+
+    artifact_layer = {
+        "status": verification["status"].upper(),
+        "label": "VERIFIED" if verification["status"] == "verified" else verification["status"].upper(),
+        "reason": quorum_reason,
+        "assessed": True,
+    }
+    source_clear = bool(
+        sentinel
+        and sentinel["review_status"] == "APPROVED"
+        and sentinel["risk_level"] in {"INFO", "LOW"}
+    )
+    source_blocked = bool(
+        sentinel
+        and (sentinel["review_status"] == "FLAGGED" or sentinel["risk_level"] in {"HIGH", "CRITICAL"})
+    )
+    relay_clear = relay_layer["status"] == "MATCH"
+    relay_blocked = relay_layer["status"] in {"MISMATCH", "ERROR"}
+    if not reproducibility_verified or source_blocked or relay_blocked:
+        recommendation = "DO_NOT_INSTALL"
+        recommendation_reason = (
+            "Installation is blocked because a required trust check failed."
+            if reproducibility_verified else decision_reason
+        )
+    elif not source_clear or not relay_clear:
+        recommendation = "REVIEW_REQUIRED"
+        missing = []
+        if not source_clear:
+            missing.append("source safety review")
+        if not relay_clear:
+            missing.append("distribution monitoring")
+        recommendation_reason = f"Artifact reproducibility is verified, but {' and '.join(missing)} are incomplete."
+    else:
+        recommendation = "INSTALL_RECOMMENDED"
+        recommendation_reason = "Reproducibility, current builder trust, source review and distribution integrity checks all pass."
+    installation_allowed = recommendation == "INSTALL_RECOMMENDED"
+
+    return {
+        "schema_version": "quorum.trust-summary.v1",
+        "release_id": release_id,
+        "historical_status": verification["status"].upper(),
+        "current_status": current_status,
+        "installation_allowed": installation_allowed,
+        "decision_reason": decision_reason,
+        "overall_recommendation": recommendation,
+        "recommendation_reason": recommendation_reason,
+        "artifact_reproducibility": artifact_layer,
+        "living_verification": {
+            "status": living_status,
+            "label": living_label,
+            "reason": living_reason,
+            "assessed": True,
+        },
+        "source_sentinel": sentinel_layer,
+        "relay": relay_layer,
+        "blockchain": blockchain_layer,
+    }
+
+
 def generate_audit_report(release_id: str) -> dict:
     anchor = get_blockchain_anchor(release_id)
     evidence = (
@@ -818,43 +1091,7 @@ def generate_audit_report(release_id: str) -> dict:
     if anchor and evidence_sha256 != anchor["evidence_sha256"]:
         raise HTTPException(status_code=500, detail="Stored evidence no longer matches its anchor")
 
-    blockchain_record: dict = {"anchored": False}
-    if anchor:
-        blockchain_record = {
-            "anchored": True,
-            "chain_id": anchor["chain_id"],
-            "contract_address": anchor["contract_address"],
-            "transaction_hash": anchor["transaction_hash"],
-            "block_number": anchor["block_number"],
-            "gas_used": anchor["gas_used"],
-            "release_id_hash": anchor["release_id_hash"],
-            "submitter": anchor["submitter"],
-            "anchored_at": anchor["anchored_at"],
-            "network": blockchain.network_name(anchor["chain_id"]),
-            "anchor_scope": "public-network" if blockchain.is_public_chain(anchor["chain_id"]) else "local-or-private-network",
-            "independent_public_anchor": False,
-        }
-        config = blockchain.load_config()
-        config_matches = bool(
-            config
-            and config.chain_id == anchor["chain_id"]
-            and config.contract_address.lower() == anchor["contract_address"].lower()
-        )
-        if config_matches:
-            blockchain_record["get_anchor_selector"] = config.get_anchor_selector
-        try:
-            on_chain = blockchain.read_anchor(config, release_id) if config_matches else None
-            blockchain_record["on_chain_match"] = bool(
-                on_chain
-                and on_chain["evidence_sha256"] == evidence_sha256
-                and on_chain["release_id_hash"] == anchor["release_id_hash"]
-            )
-            blockchain_record["independent_public_anchor"] = bool(
-                blockchain_record["on_chain_match"]
-                and blockchain.is_public_chain(anchor["chain_id"])
-            )
-        except blockchain.BlockchainError:
-            blockchain_record["on_chain_match"] = None
+    blockchain_record = blockchain_record_for_release(release_id, evidence_sha256)
 
     report = {
         "schema_version": "quorum.audit-report.v1",
@@ -1036,14 +1273,17 @@ def verify_consumer_artifact(release_id: str, data: ConsumerArtifactRequest) -> 
     }
 
 
-def verify_system_integrity() -> dict:
+def verify_system_integrity(*, runtime_only: bool = False) -> dict:
     """Verify every release independently so one corrupt record cannot hide the rest."""
     from backend.passport import verify_passport
 
-    with connect() as db:
-        release_ids = [row["id"] for row in db.execute(
-            "SELECT id FROM releases ORDER BY created_at, rowid"
-        ).fetchall()]
+    if runtime_only:
+        release_ids = list(reversed(runtime_release_ids()))
+    else:
+        with connect() as db:
+            release_ids = [row["id"] for row in db.execute(
+                "SELECT id FROM releases ORDER BY created_at, rowid"
+            ).fetchall()]
 
     releases = []
     for release_id in release_ids:
@@ -1090,17 +1330,57 @@ def verify_system_integrity() -> dict:
     }
 
 
-def get_system_stats() -> dict:
+def runtime_release_ids() -> list[str]:
+    """Return releases backed only by the three deployable builder identities.
+
+    A newly created challenge has no attestations and remains visible as PENDING.
+    Attack Lab/demo fixture releases disappear from normal product APIs as soon as
+    their synthetic attestations are added.
+    """
+    placeholders = ",".join("?" for _ in RUNTIME_BUILDER_IDS)
     with connect() as db:
-        release_counts = {
-            row["status"]: row["count"]
-            for row in db.execute(
+        return [row["id"] for row in db.execute(
+            f"""
+            SELECT r.id FROM releases r
+            WHERE NOT EXISTS (
+                SELECT 1 FROM attestations a
+                WHERE a.release_id = r.id AND a.builder_id NOT IN ({placeholders})
+            )
+            ORDER BY r.created_at DESC, r.rowid DESC
+            """,
+            RUNTIME_BUILDER_IDS,
+        ).fetchall()]
+
+
+def get_system_stats(*, runtime_only: bool = False) -> dict:
+    with connect() as db:
+        release_filter = runtime_release_ids() if runtime_only else None
+        if release_filter is not None:
+            if release_filter:
+                placeholders = ",".join("?" for _ in release_filter)
+                count_rows = db.execute(
+                    f"SELECT status, COUNT(*) AS count FROM releases WHERE id IN ({placeholders}) GROUP BY status",
+                    release_filter,
+                ).fetchall()
+            else:
+                count_rows = []
+        else:
+            count_rows = db.execute(
                 "SELECT status, COUNT(*) AS count FROM releases GROUP BY status"
             ).fetchall()
+        release_counts = {
+            row["status"]: row["count"]
+            for row in count_rows
         }
-        active_builders = db.execute(
-            "SELECT COUNT(*) AS count FROM builders WHERE trusted = 1"
-        ).fetchone()["count"]
+        if runtime_only:
+            active_builders = db.execute(
+                "SELECT COUNT(*) AS count FROM builders WHERE trusted = 1 AND id IN (?, ?, ?)",
+                RUNTIME_BUILDER_IDS,
+            ).fetchone()["count"]
+        else:
+            active_builders = db.execute(
+                "SELECT COUNT(*) AS count FROM builders WHERE trusted = 1"
+            ).fetchone()["count"]
     completed = sum(
         release_counts.get(status, 0)
         for status in ("verified", "rejected", "disagreement")
@@ -1165,16 +1445,20 @@ def register_builder(data: BuilderRegistrationRequest) -> dict:
     return next(builder for builder in list_builders() if builder["id"] == data.id)
 
 
-def list_builders() -> list[dict]:
+def list_builders(*, runtime_only: bool = False) -> list[dict]:
     with connect() as db:
+        where = "WHERE b.id IN (?, ?, ?)" if runtime_only else ""
+        params = RUNTIME_BUILDER_IDS if runtime_only else ()
         rows = db.execute(
-            """
+            f"""
             SELECT
                 b.*,
                 (SELECT a.artifact_sha256 FROM attestations a
                  WHERE a.builder_id = b.id ORDER BY a.id DESC LIMIT 1) AS latest_artifact_sha256,
                 (SELECT a.built_at FROM attestations a
                  WHERE a.builder_id = b.id ORDER BY a.id DESC LIMIT 1) AS latest_attestation_at,
+                (SELECT a.signature_valid FROM attestations a
+                 WHERE a.builder_id = b.id ORDER BY a.id DESC LIMIT 1) AS latest_signature_valid,
                 (SELECT COUNT(*) FROM attestations a WHERE a.builder_id = b.id) AS total_builds,
                 (SELECT COUNT(*) FROM attestations a
                  JOIN releases r ON r.id = a.release_id
@@ -1182,12 +1466,32 @@ def list_builders() -> list[dict]:
                    AND r.consensus_sha256 IS NOT NULL
                    AND a.artifact_sha256 = r.consensus_sha256) AS matching_builds
             FROM builders b
+            {where}
             ORDER BY b.created_at, b.id
-            """
+            """,
+            params,
         ).fetchall()
     builders = []
     for row in rows:
         total_builds = row["total_builds"]
+        compromised = is_builder_compromised(row["id"])
+        if compromised:
+            evidence_status = "COMPROMISED"
+        elif not row["trusted"]:
+            evidence_status = "PENDING_APPROVAL"
+        elif total_builds:
+            evidence_status = "ATTESTED"
+        else:
+            evidence_status = "APPROVED"
+        if row["id"] in {"northstar-ci", "parallax-labs", "local-witness"}:
+            deployment_class = "DEMO_IDENTITY"
+            independence_evidence = "Seeded demonstration identity; no physical independence claim."
+        elif row["id"] in {"github-actions", "gitlab-ci"} or "hosted-runner" in row["platform"].lower():
+            deployment_class = "HOSTED_RUNNER"
+            independence_evidence = "Signed evidence reports an independently operated hosted CI runner."
+        else:
+            deployment_class = "LOCAL_ISOLATED"
+            independence_evidence = "Separate key/workspace evidence only; physical-device and operator independence are unverified."
         builders.append(
             {
                 "id": row["id"],
@@ -1201,16 +1505,24 @@ def list_builders() -> list[dict]:
                 "created_at": row["created_at"],
                 "latest_artifact_sha256": row["latest_artifact_sha256"],
                 "latest_attestation_at": row["latest_attestation_at"],
+                "latest_signature_valid": bool(row["latest_signature_valid"])
+                if row["latest_signature_valid"] is not None else None,
                 "total_builds": total_builds,
                 "agreement_rate": round(row["matching_builds"] * 100 / total_builds, 1)
                 if total_builds
                 else 0.0,
+                "evidence_status": evidence_status,
+                "liveness_status": "UNKNOWN",
+                "deployment_class": deployment_class,
+                "independence_verified": False,
+                "independence_evidence": independence_evidence,
             }
         )
     return builders
 
 
 def sign_demo_attestation(release_id: str, builder_id: str, artifact_hash: str, platform: str) -> AttestationCreate:
+    seed_demo_builders()
     with connect() as db:
         release = db.execute("SELECT * FROM releases WHERE id = ?", (release_id,)).fetchone()
     built_at = utc_now()
@@ -1246,7 +1558,7 @@ app.add_middleware(
         "http://localhost:5173",
     ],
     allow_methods=["GET", "POST", "PATCH", "DELETE"],
-    allow_headers=["Content-Type"],
+    allow_headers=["Content-Type", "X-Quorum-Admin-Token"],
 )
 app.include_router(sentinel_router)
 app.include_router(relay_router)
@@ -1263,9 +1575,19 @@ def health_v1() -> dict:
     return health()
 
 
+@app.get("/api/v1/auth/status")
+def auth_status_v1() -> dict:
+    return {"admin_token_required": True, "header": "X-Quorum-Admin-Token"}
+
+
+@app.post("/api/v1/auth/verify", dependencies=[Depends(require_admin)])
+def verify_admin_access_v1() -> dict:
+    return {"authorized": True, "role": "ADMIN"}
+
+
 @app.get("/api/v1/stats", response_model=SystemStatsResponse)
 def system_stats_v1() -> dict:
-    return get_system_stats()
+    return get_system_stats(runtime_only=True)
 
 
 @app.get("/api/v1/blockchain/status")
@@ -1275,15 +1597,20 @@ def blockchain_status_v1() -> dict:
 
 @app.get("/api/v1/builders", response_model=list[BuilderRegistryResponse])
 def builders_v1() -> list[dict]:
-    return list_builders()
+    return list_builders(runtime_only=True)
 
 
-@app.post("/api/v1/builders", response_model=BuilderRegistryResponse, status_code=201)
+@app.post("/api/v1/builders", response_model=BuilderRegistryResponse, status_code=201, dependencies=[Depends(require_admin)])
 def register_builder_v1(data: BuilderRegistrationRequest) -> dict:
+    if data.id not in RUNTIME_BUILDER_IDS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Runtime builder id must be one of: {', '.join(RUNTIME_BUILDER_IDS)}",
+        )
     return register_builder(data)
 
 
-@app.post("/api/v1/releases", status_code=201)
+@app.post("/api/v1/releases", status_code=201, dependencies=[Depends(require_admin)])
 def register_release_v1(data: ReleaseCreate) -> dict:
     return create_release(data)
 
@@ -1293,7 +1620,7 @@ def register_attestation_v1(release_id: str, data: AttestationCreate) -> dict:
     return submit_attestation(release_id, data)
 
 
-@app.post("/api/releases", status_code=201)
+@app.post("/api/releases", status_code=201, dependencies=[Depends(require_admin)])
 def register_release(data: ReleaseCreate) -> dict:
     return create_release(data)
 
@@ -1325,13 +1652,7 @@ def demo_verify_v1(data: DemoVerificationRequest) -> dict:
 
 @app.get("/api/v1/releases", response_model=list[VerificationResponse])
 def list_releases_v1() -> list[dict]:
-    with connect() as db:
-        release_ids = [
-            row["id"]
-            for row in db.execute(
-                "SELECT id FROM releases ORDER BY created_at DESC, rowid DESC LIMIT 50"
-            ).fetchall()
-        ]
+    release_ids = runtime_release_ids()[:50]
     return [get_release_record(release_id) for release_id in release_ids]
 
 
@@ -1356,7 +1677,15 @@ def audit_report_v1(release_id: str) -> JSONResponse:
     )
 
 
-@app.post("/api/v1/releases/{release_id}/anchor")
+@app.get(
+    "/api/v1/releases/{release_id}/trust-summary",
+    response_model=ReleaseTrustSummaryResponse,
+)
+def release_trust_summary_v1(release_id: str) -> dict:
+    return build_release_trust_summary(release_id)
+
+
+@app.post("/api/v1/releases/{release_id}/anchor", dependencies=[Depends(require_admin)])
 def anchor_release_v1(release_id: str) -> dict:
     return anchor_release(release_id)
 
@@ -1390,7 +1719,7 @@ def integrity_v1(release_id: str) -> dict:
 
 @app.get('/api/v1/integrity')
 def system_integrity_v1() -> dict:
-    return verify_system_integrity()
+    return verify_system_integrity(runtime_only=True)
 
 
 class AttackRequest(BaseModel):
@@ -1402,6 +1731,7 @@ class AttackRequest(BaseModel):
 @app.post('/api/v1/attack-lab/run')
 def attack_lab_v1(data: AttackRequest) -> dict:
     from backend.passport import verify_passport
+    seed_demo_builders()
     clean = hashlib.sha256(b'Quorum attack-lab fixture v1').hexdigest()
     altered = hashlib.sha256(b'Quorum attack-lab fixture v1\x00injected').hexdigest()
     created = create_release(ReleaseCreate(repository_url='https://github.com/rakyll/hey',

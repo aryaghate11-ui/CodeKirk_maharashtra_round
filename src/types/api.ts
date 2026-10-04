@@ -53,8 +53,37 @@ export interface ApiBuilderRegistryResponse {
   created_at: string;
   latest_artifact_sha256: string | null;
   latest_attestation_at: string | null;
+  latest_signature_valid: boolean | null;
   total_builds: number;
   agreement_rate: number;
+  evidence_status: 'REGISTERED' | 'PENDING_APPROVAL' | 'APPROVED' | 'ATTESTED' | 'COMPROMISED';
+  liveness_status: 'UNKNOWN';
+  deployment_class: 'DEMO_IDENTITY' | 'LOCAL_ISOLATED' | 'HOSTED_RUNNER' | 'PHYSICALLY_INDEPENDENT';
+  independence_verified: boolean;
+  independence_evidence: string;
+}
+
+export interface ApiTrustLayerResponse {
+  status: string;
+  label: string;
+  reason: string;
+  assessed: boolean;
+}
+
+export interface ApiReleaseTrustSummaryResponse {
+  schema_version: 'quorum.trust-summary.v1';
+  release_id: string;
+  historical_status: string;
+  current_status: string;
+  installation_allowed: boolean;
+  decision_reason: string;
+  overall_recommendation: 'INSTALL_RECOMMENDED' | 'REVIEW_REQUIRED' | 'DO_NOT_INSTALL';
+  recommendation_reason: string;
+  artifact_reproducibility: ApiTrustLayerResponse;
+  living_verification: ApiTrustLayerResponse;
+  source_sentinel: ApiTrustLayerResponse;
+  relay: ApiTrustLayerResponse;
+  blockchain: ApiTrustLayerResponse;
 }
 
 export interface ApiAuditEvent {

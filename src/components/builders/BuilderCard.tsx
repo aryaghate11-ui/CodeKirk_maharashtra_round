@@ -20,6 +20,17 @@ interface BuilderCardProps {
 }
 
 export const BuilderCard: React.FC<BuilderCardProps> = ({ builder, index }) => {
+  const trustLabel = builder.status === 'COMPROMISED'
+    ? 'Trust: BLOCKED'
+    : builder.trusted
+      ? 'Trust: APPROVED'
+      : 'Trust: PENDING';
+  const trustTone = builder.status === 'COMPROMISED'
+    ? 'text-quorum-red'
+    : builder.trusted
+      ? 'text-quorum-green'
+      : 'text-quorum-amber';
+
   return (
     <Card className="hover:border-brand-border-bright transition-all duration-200">
       <div className="p-5 space-y-4">
@@ -45,6 +56,14 @@ export const BuilderCard: React.FC<BuilderCardProps> = ({ builder, index }) => {
           </div>
 
           <BuilderStatusBadge status={builder.status} />
+        </div>
+
+        <div className="rounded-lg border border-brand-border/70 bg-brand-bg-deep/55 p-2.5">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[10px] uppercase tracking-wider text-brand-subtle">Deployment evidence</span>
+            <span className={`text-[10px] font-bold ${builder.independenceVerified ? 'text-quorum-green-light' : 'text-quorum-amber-light'}`}>{builder.deploymentClass.replace(/_/g, ' ')}</span>
+          </div>
+          <p className="mt-1 text-[10px] leading-relaxed text-brand-muted">{builder.independenceEvidence}</p>
         </div>
 
         {/* Technical Specs Matrix */}
@@ -79,8 +98,8 @@ export const BuilderCard: React.FC<BuilderCardProps> = ({ builder, index }) => {
               Latest Artifact SHA-256
             </span>
             <div className="flex items-center gap-1 font-mono text-[11px] text-quorum-green-light">
-              <span>{truncateHash(builder.lastArtifactHash, 7, 5)}</span>
-              <CopyButton text={builder.lastArtifactHash} title="Copy latest artifact hash" />
+              <span>{builder.lastArtifactHash ? truncateHash(builder.lastArtifactHash, 7, 5) : 'No attestation'}</span>
+              {builder.lastArtifactHash && <CopyButton text={builder.lastArtifactHash} title="Copy latest artifact hash" />}
             </div>
           </div>
         </div>
@@ -90,14 +109,15 @@ export const BuilderCard: React.FC<BuilderCardProps> = ({ builder, index }) => {
           <div className="flex items-center gap-1.5 text-brand-muted">
             <Clock className="w-3 h-3 text-brand-subtle" />
             <span>Latest build:</span>
-            <span className="text-white">{formatRelativeTime(builder.latestAttestationTime)}</span>
+            <span className="text-white">{builder.latestAttestationTime ? formatRelativeTime(builder.latestAttestationTime) : 'Never'}</span>
           </div>
 
-          <div className={`flex items-center gap-1 ${builder.trusted ? 'text-quorum-green' : 'text-quorum-amber'}`}>
-            {builder.trusted ? <CheckCircle2 className="w-3 h-3" /> : <ShieldAlert className="w-3 h-3" />}
-            <span>{builder.trusted ? 'Trust: APPROVED' : 'Trust: PENDING'}</span>
+          <div className={`flex items-center gap-1 ${trustTone}`}>
+            {builder.trusted && builder.status !== 'COMPROMISED' ? <CheckCircle2 className="w-3 h-3" /> : <ShieldAlert className="w-3 h-3" />}
+            <span>{trustLabel}</span>
           </div>
         </div>
+        <p className="text-[10px] text-brand-subtle">Network liveness: unknown · no heartbeat has been received.</p>
       </div>
     </Card>
   );

@@ -74,7 +74,7 @@ export const DecisionBadge: React.FC<{ decision: VerificationDecision; size?: 's
     case 'ACCEPTED':
       return (
         <Badge variant="green" size={size} dot pulse>
-          ACCEPTED
+          VERIFIED
         </Badge>
       );
     case 'REJECTED':
@@ -100,28 +100,34 @@ export const DecisionBadge: React.FC<{ decision: VerificationDecision; size?: 's
 
 export const BuilderStatusBadge: React.FC<{ status: BuilderStatus }> = ({ status }) => {
   switch (status) {
-    case 'ONLINE':
+    case 'ATTESTED':
       return (
         <Badge variant="green" size="sm" dot>
-          ONLINE
+          ATTESTED
         </Badge>
       );
-    case 'DEGRADED':
+    case 'APPROVED':
       return (
-        <Badge variant="amber" size="sm" dot>
-          DEGRADED
+        <Badge variant="green" size="sm" dot>
+          APPROVED
         </Badge>
       );
-    case 'OFFLINE':
+    case 'COMPROMISED':
       return (
         <Badge variant="red" size="sm" dot>
-          OFFLINE
+          COMPROMISED
         </Badge>
       );
     case 'PENDING_APPROVAL':
       return (
         <Badge variant="amber" size="sm" dot>
           PENDING APPROVAL
+        </Badge>
+      );
+    case 'REGISTERED':
+      return (
+        <Badge variant="slate" size="sm" dot>
+          REGISTERED
         </Badge>
       );
   }
