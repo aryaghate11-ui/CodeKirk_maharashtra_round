@@ -1,8 +1,7 @@
 import React from 'react';
-import { Menu, Activity, ShieldCheck, Database, RefreshCw, Zap } from 'lucide-react';
+import { Menu, RefreshCw } from 'lucide-react';
 import { PageId } from './Sidebar';
 import { SystemStats } from '../../types';
-import { api } from '../../services/api';
 
 interface HeaderProps {
   currentPage: PageId;
@@ -19,7 +18,7 @@ export const Header: React.FC<HeaderProps> = ({
   stats,
   onRefresh,
   isRefreshing = false,
-  onLaunchAttackDemo,
+  onLaunchAttackDemo: _onLaunchAttackDemo,
 }) => {
   const pageTitles: Record<PageId, { title: string; subtitle: string }> = {
     dashboard: {
@@ -59,7 +58,7 @@ export const Header: React.FC<HeaderProps> = ({
   const currentMeta = pageTitles[currentPage];
 
   return (
-    <header className="sticky top-0 z-30 bg-brand-bg/75 backdrop-blur-md border-b border-brand-border/70 px-4 sm:px-8 py-4 transition-all">
+    <header className="sticky top-0 z-30 bg-brand-bg/80 backdrop-blur-md border-b border-brand-border/70 px-4 sm:px-8 py-3.5 transition-all">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         {/* Left: Mobile hamburger & Page Title */}
         <div className="flex items-center gap-3">
@@ -85,17 +84,6 @@ export const Header: React.FC<HeaderProps> = ({
 
         {/* Right: Controls & Real Backend Status */}
         <div className="flex items-center gap-2.5 flex-wrap sm:flex-nowrap">
-          {/* Quick Scenario Demo Trigger */}
-          {currentPage !== 'attack-lab' && onLaunchAttackDemo && (
-            <button
-              onClick={onLaunchAttackDemo}
-              className="hidden md:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-quorum-amber-light bg-quorum-amber-bg/70 hover:bg-quorum-amber-bg border border-quorum-amber-border transition-colors shadow-sm backdrop-blur-sm"
-            >
-              <Zap className="w-3.5 h-3.5 text-quorum-amber" />
-              <span>Test Scenarios</span>
-            </button>
-          )}
-
           {/* Backend Connection Indicator */}
           <div
             className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs border backdrop-blur-sm ${
@@ -119,12 +107,6 @@ export const Header: React.FC<HeaderProps> = ({
             <span className="font-medium">
               {stats?.isBackendConnected ? 'Connected' : 'Disconnected'}
             </span>
-          </div>
-
-          {/* Prototype Architecture Indicator */}
-          <div className="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs border border-brand-border/70 bg-brand-panel/75 text-brand-muted font-mono text-[11px] backdrop-blur-sm">
-            <Database className="w-3 h-3 text-brand-subtle" />
-            <span>Prototype · Local SQLite</span>
           </div>
 
           {/* Refresh Action */}

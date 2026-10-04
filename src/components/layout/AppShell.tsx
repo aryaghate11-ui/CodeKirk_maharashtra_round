@@ -42,7 +42,7 @@ export const AppShell: React.FC<AppShellProps> = ({
         />
 
         {/* Right Main Content Area */}
-        <div className="flex-1 flex flex-col min-w-0 lg:pl-64">
+        <div className="flex-1 flex flex-col min-w-0 lg:pl-60">
           <Header
             currentPage={currentPage}
             onOpenMobileMenu={() => setMobileMenuOpen(true)}
@@ -52,7 +52,7 @@ export const AppShell: React.FC<AppShellProps> = ({
             onLaunchAttackDemo={onLaunchAttackDemo}
           />
 
-          <main className="flex-1 p-4 sm:p-8 max-w-7xl w-full mx-auto animate-fade-in">
+          <main className="flex-1 p-4 sm:p-6 lg:p-8 max-w-7xl w-full mx-auto animate-fade-in">
             {children}
           </main>
         </div>

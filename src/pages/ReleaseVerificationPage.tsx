@@ -1,36 +1,68 @@
 import React, { useEffect, useState } from 'react';
-import { Card, CardHeader, CardBody } from '../components/common/Card';
-import { DecisionBadge } from '../components/common/Badge';
+import {
+  AlertTriangle,
+  ArrowRight,
+  CheckCircle2,
+  ChevronDown,
+  ChevronUp,
+  ExternalLink,
+  FileCheck2,
+  FileCode,
+  GitCompare,
+  Hash,
+  Info,
+  Layers,
+  Link2,
+  Play,
+  Radio,
+  RefreshCcw,
+  ShieldAlert,
+  ShieldCheck,
+  XCircle,
+} from 'lucide-react';
+import { Card, CardBody } from '../components/common/Card';
+import { Badge } from '../components/common/Badge';
 import { CopyButton } from '../components/common/CopyButton';
 import { BuilderEvidenceTable } from '../components/verification/BuilderEvidenceTable';
 import { QuorumSummaryCard } from '../components/verification/QuorumSummaryCard';
 import { WhyDecisionCard } from '../components/verification/WhyDecisionCard';
+import { ArtifactHashVerifier } from '../components/verification/ArtifactHashVerifier';
 import { VerificationProgressModal } from '../components/verification/VerificationProgressModal';
 import { ApiErrorBanner } from '../components/common/ApiErrorBanner';
 import { VerificationResult, Release } from '../types';
 import { api } from '../services/api';
 import { truncateHash } from '../lib/utils';
-import {
-  ShieldCheck,
-  ShieldAlert,
-  AlertTriangle,
-  Play,
-  ExternalLink,
-  Layers,
-  Sparkles,
-  ChevronDown,
-  ChevronUp,
-  Info,
-  CheckCircle2,
-  FileCode,
-} from 'lucide-react';
+import { PageId } from '../components/layout/Sidebar';
 
 interface ReleaseVerificationPageProps {
   selectedReleaseId?: string;
+  onNavigate?: (page: PageId) => void;
 }
+
+interface TrustSignals {
+  living: string;
+  sentinel: string;
+  relay: string;
+  blockchain: string;
+}
+
+const emptySignals: TrustSignals = {
+  living: 'Not assessed',
+  sentinel: 'Not assessed',
+  relay: 'No monitor',
+  blockchain: 'Not anchored',
+};
+
+const signalTone = (value: string): 'green' | 'amber' | 'red' | 'slate' => {
+  if (/degraded|critical|high risk|mismatch|changed/i.test(value)) return 'red';
+  if (/verified|info risk|low risk|clear|match|anchored|active/i.test(value)) return 'green';
+  if (/pending|not assessed|not anchored|no monitor/i.test(value)) return 'amber';
+  return 'slate';
+};
 
 export const ReleaseVerificationPage: React.FC<ReleaseVerificationPageProps> = ({
   selectedReleaseId = '',
+  onNavigate,
 }) => {
   const [activePolicyType, setActivePolicyType] = useState<'2-of-3' | '3-of-3'>('2-of-3');
   const [verification, setVerification] = useState<VerificationResult | null>(null);
@@ -40,21 +72,49 @@ export const ReleaseVerificationPage: React.FC<ReleaseVerificationPageProps> = (
   const [allReleases, setAllReleases] = useState<Release[]>([]);
   const [selectedRelId, setSelectedRelId] = useState(selectedReleaseId);
   const [showTechnicalDetails, setShowTechnicalDetails] = useState(false);
+  const [signals, setSignals] = useState<TrustSignals>(emptySignals);
 
   useEffect(() => {
-    if (selectedReleaseId) {
-      setSelectedRelId(selectedReleaseId);
-    }
+    if (selectedReleaseId) setSelectedRelId(selectedReleaseId);
   }, [selectedReleaseId]);
 
-  const loadVerification = async (relId: string = selectedRelId) => {
+  const loadVerification = async (releaseId: string = selectedRelId) => {
+    if (!releaseId) return;
     setIsLoading(true);
     setApiError(null);
     try {
-      const data = await api.getVerification(relId);
+      const data = await api.getVerification(releaseId);
       setVerification(data);
+
+      const [livingResult, sentinelResult, relayResult, auditResult] = await Promise.allSettled([
+        api.getLivingReleases(),
+        api.getSentinelComparisons(),
+        api.getRelayMonitors(),
+        api.getAudit(releaseId),
+      ]);
+      const living = livingResult.status === 'fulfilled'
+        ? livingResult.value.find((item) => item.release_id === releaseId)
+        : undefined;
+      const sentinel = sentinelResult.status === 'fulfilled'
+        ? sentinelResult.value.find((item) => item.target_commit === data.release.commit)
+        : undefined;
+      const monitors = relayResult.status === 'fulfilled'
+        ? relayResult.value.filter((item) => item.release_id === releaseId)
+        : [];
+      const relay = monitors.some((item) => item.last_result === 'MISMATCH')
+        ? 'Artifact mismatch'
+        : monitors.some((item) => item.last_result === 'MATCH')
+          ? 'Artifact matches'
+          : monitors.length
+            ? 'Monitoring active'
+            : 'No monitor';
+      setSignals({
+        living: living?.current_status.replace('_', ' ') || 'Not assessed',
+        sentinel: sentinel ? `${sentinel.risk_level} risk` : 'Not assessed',
+        relay,
+        blockchain: auditResult.status === 'fulfilled' && auditResult.value.anchored ? 'Anchored' : 'Not anchored',
+      });
     } catch (err: any) {
-      console.error('Failed to run verification', err);
       setApiError(err);
     } finally {
       setIsLoading(false);
@@ -65,353 +125,182 @@ export const ReleaseVerificationPage: React.FC<ReleaseVerificationPageProps> = (
     api.getReleases()
       .then((releases) => {
         setAllReleases(releases);
-        if (releases.length > 0 && !selectedRelId) {
-          setSelectedRelId(releases[0].id);
-        }
+        if (releases.length > 0 && !selectedRelId) setSelectedRelId(releases[0].id);
       })
-      .catch((err) => console.warn('Could not fetch releases list', err));
+      .catch((err) => setApiError(err));
   }, []);
 
-  useEffect(() => {
-    if (selectedRelId) loadVerification(selectedRelId);
-  }, [selectedRelId]);
-
-  const handleRunVerification = () => {
-    setIsVerifyingModalOpen(true);
-  };
+  useEffect(() => { if (selectedRelId) void loadVerification(selectedRelId); }, [selectedRelId]);
 
   const handleModalFinished = () => {
     setIsVerifyingModalOpen(false);
     setIsLoading(true);
     setApiError(null);
     api.evaluateRelease(selectedRelId, activePolicyType)
-      .then(setVerification)
+      .then((result) => {
+        setVerification(result);
+        return loadVerification(selectedRelId);
+      })
       .catch(setApiError)
       .finally(() => setIsLoading(false));
   };
 
   if (!verification) {
     return (
-      <div className="space-y-6">
-        {apiError && (
-          <ApiErrorBanner
-            error={apiError}
-            endpoint="/releases/{id}"
-            onRetry={() => loadVerification(selectedRelId)}
-          />
-        )}
-        <div className="flex items-center justify-center min-h-[350px]">
-          <div className="text-center space-y-3">
-            {isLoading ? (
-              <>
-                <div className="w-8 h-8 rounded-full border-2 border-quorum-green border-t-transparent animate-spin mx-auto" />
-                <p className="text-xs font-mono text-brand-muted">Connecting to verifier...</p>
-              </>
-            ) : (
-              <p className="text-xs font-mono text-quorum-red-light">Verification engine unreachable.</p>
-            )}
-          </div>
+      <div className="space-y-5">
+        {apiError && <ApiErrorBanner error={apiError} endpoint="/releases/{id}" onRetry={() => loadVerification(selectedRelId)} />}
+        <div className="min-h-[360px] grid place-items-center text-center">
+          {isLoading ? <div><div className="w-8 h-8 rounded-full border-2 border-quorum-green border-t-transparent animate-spin mx-auto" /><p className="mt-3 text-sm text-brand-muted">Loading real verification evidence…</p></div> : <p className="text-sm text-quorum-red-light">Verification engine unavailable.</p>}
         </div>
       </div>
     );
   }
 
   const { release, attestations, consensusHash, conflictDetected, decision } = verification;
+  const trustDegraded = signals.living === 'TRUST DEGRADED';
+  const status = trustDegraded ? 'TRUST DEGRADED' : decision === 'ACCEPTED' ? 'VERIFIED' : decision;
+  const installAllowed = decision === 'ACCEPTED' && !trustDegraded;
+  const statusTone: 'green' | 'amber' | 'red' = installAllowed ? 'green' : status === 'PENDING' ? 'amber' : 'red';
+  const candidateMatches = consensusHash === release.publishedArtifactHash;
+  const checks = [
+    { label: 'Signatures valid', pass: verification.signaturesValid },
+    { label: `${verification.agreement} of ${verification.totalBuilders} builders agree`, pass: verification.policySatisfied },
+    { label: 'Candidate matches consensus', pass: candidateMatches },
+    { label: conflictDetected ? 'Builder conflict detected' : 'No builder conflicts', pass: !conflictDetected },
+  ];
+  const trustCards = [
+    { label: 'Living Verification', value: signals.living, icon: RefreshCcw, page: 'living' as PageId },
+    { label: 'Source Sentinel', value: signals.sentinel, icon: GitCompare, page: 'sentinel' as PageId },
+    { label: 'Quorum Relay', value: signals.relay, icon: Radio, page: 'relay' as PageId },
+    { label: 'Blockchain', value: signals.blockchain, icon: Link2, page: 'audit' as PageId },
+  ];
 
   return (
-    <div className="space-y-6">
-      {apiError && (
-        <ApiErrorBanner
-          error={apiError}
-          endpoint="/releases/{id}"
-          onRetry={() => loadVerification(selectedRelId)}
-        />
-      )}
+    <div className="space-y-5">
+      {apiError && <ApiErrorBanner error={apiError} endpoint="/releases/{id}" onRetry={() => loadVerification(selectedRelId)} />}
 
-      {/* Top Header Card: Title & Controls */}
-      <Card className="border-brand-border-bright shadow-panel">
-        <div className="p-6">
-          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-6">
-            {/* Title & Package Info */}
-            <div className="space-y-1.5">
-              <div className="inline-flex items-center gap-2 px-2.5 py-0.5 rounded-full bg-brand-bg-deep border border-brand-border text-[11px] font-mono font-semibold text-brand-muted">
-                <Sparkles className="w-3.5 h-3.5 text-quorum-green" />
-                Quorum Verification
-              </div>
-              <h2 className="text-2xl font-extrabold text-white tracking-tight flex items-center gap-2.5">
-                <span>{release.name}</span>
-                <span className="text-sm font-mono font-normal text-brand-muted px-2 py-0.5 rounded bg-brand-bg-deep border border-brand-border">
-                  {release.version}
-                </span>
-              </h2>
-              <p className="text-xs text-brand-muted">
-                Evaluating independent builder attestations against the candidate release binary.
-              </p>
-            </div>
+      <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-4 rounded-xl border border-brand-border/70 bg-brand-panel/65 backdrop-blur-md p-4">
+        <div className="min-w-0">
+          <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-brand-subtle">Selected release</p>
+          <div className="mt-1 flex items-center gap-2 min-w-0">
+            <h2 className="text-lg font-bold text-white truncate">{release.name}</h2>
+            <span className="text-xs font-mono text-brand-muted flex-shrink-0">{release.version}</span>
+          </div>
+        </div>
+        <div className="flex flex-col sm:flex-row gap-2.5">
+          {allReleases.length > 0 && (
+            <label className="text-[10px] font-semibold uppercase tracking-wider text-brand-muted">
+              Release
+              <select value={selectedRelId} onChange={(event) => setSelectedRelId(event.target.value)} disabled={isLoading} className="mt-1 block w-full sm:w-56 bg-brand-bg-deep text-xs normal-case font-semibold text-white border border-brand-border-bright rounded-lg px-3 py-2 outline-none">
+                {allReleases.map((item) => <option key={item.id} value={item.id}>{item.name} · {item.version}</option>)}
+              </select>
+            </label>
+          )}
+          <label className="text-[10px] font-semibold uppercase tracking-wider text-brand-muted">
+            Policy
+            <select value={activePolicyType} onChange={(event) => setActivePolicyType(event.target.value as '2-of-3' | '3-of-3')} disabled={isLoading} className="mt-1 block w-full sm:w-44 bg-brand-bg-deep text-xs normal-case font-semibold text-white border border-brand-border-bright rounded-lg px-3 py-2 outline-none">
+              <option value="2-of-3">2 of 3 · Majority</option>
+              <option value="3-of-3">3 of 3 · Unanimous</option>
+            </select>
+          </label>
+        </div>
+      </div>
 
-            {/* Quick Interactive Controls */}
-            <div className="flex flex-wrap sm:flex-nowrap items-center gap-3 bg-brand-bg-deep/75 backdrop-blur-md p-3 rounded-xl border border-brand-border-bright/60 shadow-sm">
-              {allReleases.length > 0 && (
-                <div className="flex-1 sm:flex-initial space-y-1">
-                  <label className="text-[10px] font-mono font-semibold text-brand-muted uppercase block px-1 tracking-wider">
-                    Select Package
-                  </label>
-                  <select
-                    value={selectedRelId}
-                    onChange={(e) => setSelectedRelId(e.target.value)}
-                    disabled={isLoading}
-                    className="w-full sm:w-auto min-w-[170px] bg-brand-panel-elevated/85 backdrop-blur-sm text-xs font-semibold text-white border border-brand-border-bright rounded-lg px-3 py-2 outline-none cursor-pointer focus:ring-2 focus:ring-quorum-green/50 disabled:opacity-50 transition-all"
-                  >
-                    {allReleases.map((r) => (
-                      <option key={r.id} value={r.id} className="bg-brand-bg text-white py-1">
-                        {r.name} ({r.version})
-                      </option>
-                    ))}
-                  </select>
+      <Card glow={statusTone} className="border-brand-border-bright">
+        <CardBody className="p-5 sm:p-7">
+          <div className="grid lg:grid-cols-[1fr_300px] gap-7">
+            <div>
+              <div className="flex items-center gap-3">
+                <div className={`p-3 rounded-xl border ${installAllowed ? 'bg-quorum-green-bg border-quorum-green-border' : status === 'PENDING' ? 'bg-quorum-amber-bg border-quorum-amber-border' : 'bg-quorum-red-bg border-quorum-red-border'}`}>
+                  {installAllowed ? <ShieldCheck className="w-7 h-7 text-quorum-green" /> : status === 'PENDING' ? <Layers className="w-7 h-7 text-quorum-amber" /> : <ShieldAlert className="w-7 h-7 text-quorum-red" />}
                 </div>
-              )}
-
-              <div className="flex-1 sm:flex-initial space-y-1">
-                <label className="text-[10px] font-mono font-semibold text-brand-muted uppercase block px-1 tracking-wider">
-                  Quorum Policy
-                </label>
-                <select
-                  value={activePolicyType}
-                  onChange={(e) => setActivePolicyType(e.target.value as '2-of-3' | '3-of-3')}
-                  disabled={isLoading}
-                  className="w-full sm:w-auto min-w-[160px] bg-brand-panel-elevated/85 backdrop-blur-sm text-xs font-semibold text-white border border-brand-border-bright rounded-lg px-3 py-2 outline-none cursor-pointer focus:ring-2 focus:ring-quorum-green/50 disabled:opacity-50 transition-all"
-                >
-                  <option value="2-of-3" className="bg-brand-bg text-white py-1">2-of-3 (Majority)</option>
-                  <option value="3-of-3" className="bg-brand-bg text-white py-1">3-of-3 (Unanimous)</option>
-                </select>
+                <div><p className="text-xs text-brand-muted">Current trust decision</p><div className="mt-1"><Badge variant={statusTone} size="lg" dot>{status}</Badge></div></div>
               </div>
 
-              <div className="self-end pt-1">
-                <button
-                  onClick={handleRunVerification}
-                  disabled={isLoading}
-                  className="px-4 py-2 rounded-lg text-xs font-bold text-black bg-quorum-green hover:bg-quorum-green-light disabled:opacity-50 transition-all flex items-center gap-1.5 shadow-glow-green cursor-pointer"
-                  title="Execute decentralized build verification"
-                >
-                  {isLoading ? (
-                    <>
-                      <div className="w-3.5 h-3.5 border-2 border-black border-t-transparent rounded-full animate-spin" />
-                      <span>Verifying...</span>
-                    </>
-                  ) : (
-                    <>
-                      <Play className="w-3.5 h-3.5 fill-black" />
-                      <span>Run Verification</span>
-                    </>
-                  )}
+              <h3 className="mt-5 text-xl sm:text-2xl font-bold text-white">
+                {installAllowed ? 'This release passed Quorum verification.' : 'Do not install this release yet.'}
+              </h3>
+              <p className="mt-2 text-sm text-brand-muted leading-relaxed max-w-2xl">
+                {trustDegraded ? 'The release was previously verified, but later builder trust information reduced its valid evidence below the required quorum.' : verification.explanation}
+              </p>
+
+              <div className="mt-5 flex flex-wrap gap-3">
+                <button onClick={() => setIsVerifyingModalOpen(true)} disabled={isLoading} className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-quorum-green text-black text-sm font-bold hover:bg-quorum-green-light disabled:opacity-50 shadow-glow-green">
+                  <Play className="w-4 h-4 fill-black" /> {isLoading ? 'Verifying…' : 'Run verification'}
+                </button>
+                <button onClick={() => document.getElementById('artifact-check')?.scrollIntoView({ behavior: 'smooth' })} className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg border border-brand-border-bright bg-brand-panel-elevated/60 text-sm font-semibold text-white hover:border-quorum-green-border">
+                  <FileCheck2 className="w-4 h-4" /> Check downloaded file
                 </button>
               </div>
             </div>
-          </div>
-        </div>
-      </Card>
 
-      {/* Prominent Verification Decision Banner */}
-      <div
-        className={`p-5 rounded-2xl border backdrop-blur-md transition-all ${
-          decision === 'ACCEPTED'
-            ? 'bg-quorum-green-bg/40 border-quorum-green-border text-white'
-            : decision === 'REJECTED'
-            ? 'bg-quorum-red-bg/40 border-quorum-red-border text-white'
-            : decision === 'CONFLICT'
-            ? 'bg-quorum-amber-bg/40 border-quorum-amber-border text-white'
-            : 'bg-brand-panel-elevated/80 border-brand-border text-white'
-        }`}
-      >
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-          <div className="flex items-start sm:items-center gap-3.5">
-            <div
-              className={`p-3 rounded-xl border ${
-                decision === 'ACCEPTED'
-                  ? 'bg-quorum-green-bg border-quorum-green-border text-quorum-green'
-                  : decision === 'REJECTED'
-                  ? 'bg-quorum-red-bg border-quorum-red-border text-quorum-red'
-                  : decision === 'CONFLICT'
-                  ? 'bg-quorum-amber-bg border-quorum-amber-border text-quorum-amber'
-                  : 'bg-brand-panel border-brand-border text-brand-muted'
-              }`}
-            >
-              {decision === 'ACCEPTED' && <ShieldCheck className="w-6 h-6 text-quorum-green" />}
-              {decision === 'REJECTED' && <ShieldAlert className="w-6 h-6 text-quorum-red" />}
-              {decision === 'CONFLICT' && <AlertTriangle className="w-6 h-6 text-quorum-amber" />}
-              {decision === 'PENDING' && <Layers className="w-6 h-6 text-brand-muted" />}
-            </div>
-
-            <div>
-              <div className="flex items-center gap-2">
-                <span className="text-xs font-mono uppercase tracking-wider text-brand-muted">
-                  Decision Outcome:
-                </span>
-                <DecisionBadge decision={decision} size="lg" />
+            <div className="rounded-xl bg-brand-bg-deep/65 border border-brand-border/70 p-5">
+              <p className="text-[11px] uppercase tracking-wider text-brand-subtle">Why this decision</p>
+              <div className="mt-3 space-y-2.5">
+                {checks.map((check) => <div key={check.label} className="flex items-center gap-2 text-xs"><span className={`w-5 h-5 rounded-full grid place-items-center ${check.pass ? 'bg-quorum-green-bg text-quorum-green' : 'bg-quorum-red-bg text-quorum-red'}`}>{check.pass ? <CheckCircle2 className="w-3.5 h-3.5" /> : <XCircle className="w-3.5 h-3.5" />}</span><span className={check.pass ? 'text-brand-text' : 'text-quorum-red-light'}>{check.label}</span></div>)}
               </div>
-              <p className="text-sm font-medium mt-1 text-slate-200">
-                {decision === 'ACCEPTED' &&
-                  `Verified: ${verification.agreement} of ${verification.totalBuilders} independent builders produced identical SHA-256 hashes matching the candidate binary.`}
-                {decision === 'REJECTED' &&
-                  'Rejected: The published candidate binary does not match the reproducible consensus hash produced by independent builders.'}
-                {decision === 'CONFLICT' &&
-                  'Builders Disagree: Independent builders produced conflicting artifact hashes from the same pinned source commit.'}
-                {decision === 'PENDING' &&
-                  'Pending: Awaiting required builder attestations.'}
-              </p>
+              <div className={`mt-4 pt-4 border-t border-brand-border/70 flex items-center gap-2 text-sm font-semibold ${installAllowed ? 'text-quorum-green-light' : 'text-quorum-red-light'}`}>
+                {installAllowed ? <CheckCircle2 className="w-4 h-4" /> : <AlertTriangle className="w-4 h-4" />}
+                Installation {installAllowed ? 'allowed' : 'blocked'}
+              </div>
             </div>
           </div>
-
-          <div className="flex-shrink-0 sm:text-right font-mono text-xs">
-            <span className="text-brand-muted block text-[11px] uppercase">Agreement Ratio</span>
-            <span className="text-lg font-bold text-white">
-              {verification.agreement} / {verification.totalBuilders} Builders
-            </span>
-          </div>
-        </div>
-      </div>
-
-      {/* Security Educational Note */}
-      <div className="p-4 rounded-xl bg-brand-panel/75 backdrop-blur-md border border-brand-border/70 text-xs text-brand-muted flex items-start gap-3">
-        <Info className="w-4 h-4 text-quorum-blue-light flex-shrink-0 mt-0.5" />
-        <p className="leading-relaxed">
-          <strong className="text-white">Why signatures alone aren't enough: </strong>
-          A valid Ed25519 signature only proves <em>which builder</em> generated the attestation—it does not prove the binary was uncompromised. If a single build machine is compromised or non-deterministic, its signature will still be cryptographically valid. Quorum protects against this by verifying that multiple independent builders arrived at the <strong>exact same SHA-256 hash</strong>.
-        </p>
-      </div>
-
-      {/* Builder Evidence Table */}
-      <Card>
-        <CardHeader
-          title="Independent Builder Evidence"
-          subtitle="Signed build statements submitted by independent execution environments"
-          icon={<Layers className="w-4 h-4 text-quorum-green" />}
-          badge={
-            <span className="text-[11px] font-mono px-2.5 py-0.5 rounded bg-brand-panel-elevated/75 backdrop-blur-sm border border-brand-border text-brand-text">
-              {attestations.length} / {verification.totalBuilders} Attestations
-            </span>
-          }
-        />
-        <BuilderEvidenceTable
-          attestations={attestations}
-          consensusHash={consensusHash}
-          conflictDetected={conflictDetected}
-        />
+        </CardBody>
       </Card>
 
-      {/* Dual Bottom Section: Quorum Decision Engine (Left) + Why This Decision (Right) */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-stretch">
-        <QuorumSummaryCard verification={verification} />
-        <WhyDecisionCard verification={verification} />
-      </div>
+      <section>
+        <div className="flex items-end justify-between mb-3 px-1"><div><h3 className="text-sm font-bold text-white">Builder consensus</h3><p className="text-xs text-brand-muted mt-0.5">The evidence that determines the result.</p></div><span className="text-xs font-mono text-brand-muted">{verification.agreement}/{verification.totalBuilders} match</span></div>
+        <div className="grid md:grid-cols-3 gap-3">
+          {attestations.map((attestation, index) => {
+            const matches = attestation.signatureValid && attestation.artifactHash === consensusHash;
+            return (
+              <div key={attestation.id || index} className={`min-w-0 overflow-hidden rounded-xl border p-4 bg-brand-panel/70 backdrop-blur-md ${matches ? 'border-quorum-green-border/70' : 'border-quorum-red-border/70'}`}>
+                <div className="flex min-w-0 items-start justify-between gap-3"><div className="min-w-0"><p className="truncate text-sm font-semibold text-white">{attestation.builderName}</p><p className="mt-0.5 block max-w-full truncate text-[11px] text-brand-muted" title={attestation.environment}>{attestation.environment}</p></div><Badge variant={matches ? 'green' : 'red'} size="sm" dot>{matches ? 'MATCH' : attestation.signatureValid ? 'CONFLICT' : 'INVALID'}</Badge></div>
+                <div className="mt-4 flex items-center gap-2 text-[11px] font-mono text-brand-subtle"><Hash className="w-3.5 h-3.5" /><span>{truncateHash(attestation.artifactHash, 10, 7)}</span></div>
+              </div>
+            );
+          })}
+        </div>
+      </section>
 
-      {/* Expandable Technical Details Accordion */}
-      <div className="rounded-xl border border-brand-border/70 bg-brand-panel/75 backdrop-blur-md overflow-hidden">
-        <button
-          onClick={() => setShowTechnicalDetails(!showTechnicalDetails)}
-          className="w-full p-4 flex items-center justify-between text-left hover:bg-brand-panel-elevated/50 transition-colors"
-        >
-          <div className="flex items-center gap-2 text-xs font-semibold text-white">
-            <FileCode className="w-4 h-4 text-quorum-green" />
-            <span>Technical Details (Repository, Pinned Commit, Artifact Hashes)</span>
-          </div>
-          <div className="flex items-center gap-1.5 text-xs font-mono text-brand-muted">
-            <span>{showTechnicalDetails ? 'Collapse' : 'Expand'}</span>
-            {showTechnicalDetails ? (
-              <ChevronUp className="w-4 h-4" />
-            ) : (
-              <ChevronDown className="w-4 h-4" />
-            )}
-          </div>
+      <section>
+        <div className="mb-3 px-1"><h3 className="text-sm font-bold text-white">Security & trust</h3><p className="text-xs text-brand-muted mt-0.5">Supporting checks remain available without competing with the main decision.</p></div>
+        <div className="grid sm:grid-cols-2 xl:grid-cols-4 gap-3">
+          {trustCards.map((item) => {
+            const Icon = item.icon;
+            return <button key={item.label} onClick={() => onNavigate?.(item.page)} className="text-left rounded-xl border border-brand-border/70 bg-brand-panel/65 p-4 hover:border-brand-border-bright transition-colors"><div className="flex items-center justify-between"><Icon className="w-4 h-4 text-brand-muted" /><ArrowRight className="w-3.5 h-3.5 text-brand-subtle" /></div><p className="mt-3 text-xs text-brand-muted">{item.label}</p><div className="mt-1"><Badge variant={signalTone(item.value)} size="sm" dot>{item.value}</Badge></div></button>;
+          })}
+        </div>
+      </section>
+
+      <div id="artifact-check"><ArtifactHashVerifier releaseId={release.id} consensusHash={consensusHash} /></div>
+
+      <div className="rounded-xl border border-brand-border/70 bg-brand-panel/70 backdrop-blur-md overflow-hidden">
+        <button onClick={() => setShowTechnicalDetails((show) => !show)} className="w-full p-4 flex items-center justify-between text-left hover:bg-brand-panel-elevated/40 transition-colors" aria-expanded={showTechnicalDetails}>
+          <div className="flex items-center gap-3"><FileCode className="w-4 h-4 text-quorum-green" /><div><p className="text-sm font-semibold text-white">Technical evidence</p><p className="text-xs text-brand-muted mt-0.5">Hashes, signatures, policy evaluation and audit chain</p></div></div>
+          <div className="flex items-center gap-2 text-xs text-brand-muted"><span>{showTechnicalDetails ? 'Hide' : 'View details'}</span>{showTechnicalDetails ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}</div>
         </button>
 
         {showTechnicalDetails && (
-          <div className="p-4 pt-0 border-t border-brand-border/60">
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 pt-4">
-              {/* Repository */}
-              <div className="p-3 rounded-lg bg-brand-bg-deep/65 backdrop-blur-sm border border-brand-border/60 space-y-1">
-                <span className="text-[10px] font-mono text-brand-muted uppercase block">
-                  Repository
-                </span>
-                <div className="flex items-center justify-between">
-                  <a
-                    href={`https://${release.repo}`}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="text-xs font-semibold text-brand-text hover:text-quorum-green-light truncate flex items-center gap-1"
-                  >
-                    {release.repo}
-                    <ExternalLink className="w-2.5 h-2.5 opacity-60" />
-                  </a>
-                  <CopyButton text={release.repo} title="Copy repository URL" />
-                </div>
-              </div>
+          <div className="border-t border-brand-border/60 p-4 sm:p-5 space-y-5">
+            <BuilderEvidenceTable attestations={attestations} consensusHash={consensusHash} conflictDetected={conflictDetected} />
+            <div className="grid lg:grid-cols-2 gap-5"><QuorumSummaryCard verification={verification} /><WhyDecisionCard verification={verification} /></div>
 
-              {/* Pinned Commit */}
-              <div className="p-3 rounded-lg bg-brand-bg-deep/60 border border-brand-border space-y-1">
-                <span className="text-[10px] font-mono text-brand-muted uppercase block">
-                  Pinned Source Commit
-                </span>
-                <div className="flex items-center justify-between">
-                  <span className="font-mono text-xs text-white" title={release.commit}>
-                    {truncateHash(release.commit, 8, 6)}
-                  </span>
-                  <CopyButton text={release.commit} title="Copy commit SHA" />
-                </div>
-              </div>
-
-              {/* Target Artifact */}
-              <div className="p-3 rounded-lg bg-brand-bg-deep/60 border border-brand-border space-y-1">
-                <span className="text-[10px] font-mono text-brand-muted uppercase block">
-                  Target Artifact Name
-                </span>
-                <div className="flex items-center justify-between">
-                  <span className="font-mono text-xs text-white truncate">
-                    {release.artifactName}
-                  </span>
-                  <CopyButton text={release.artifactName} title="Copy artifact name" />
-                </div>
-              </div>
-
-              {/* Published Binary Hash */}
-              <div className="p-3 rounded-lg bg-brand-bg-deep/60 border border-brand-border space-y-1">
-                <span className="text-[10px] font-mono text-brand-muted uppercase block">
-                  Published Candidate SHA-256
-                </span>
-                <div className="flex items-center justify-between">
-                  <span
-                    className="font-mono text-xs text-brand-muted truncate"
-                    title={release.publishedArtifactHash}
-                  >
-                    {truncateHash(release.publishedArtifactHash, 6, 4)}
-                  </span>
-                  <CopyButton
-                    text={release.publishedArtifactHash}
-                    title="Copy published SHA-256"
-                  />
-                </div>
-              </div>
+            <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3">
+              <div className="p-3 rounded-lg bg-brand-bg-deep/60 border border-brand-border"><span className="text-[10px] uppercase text-brand-muted">Repository</span><div className="mt-1 flex items-center justify-between gap-2"><a href={`https://${release.repo}`} target="_blank" rel="noreferrer" className="text-xs text-white hover:text-quorum-green-light truncate">{release.repo} <ExternalLink className="inline w-3 h-3" /></a><CopyButton text={release.repo} /></div></div>
+              <div className="p-3 rounded-lg bg-brand-bg-deep/60 border border-brand-border"><span className="text-[10px] uppercase text-brand-muted">Pinned commit</span><div className="mt-1 flex items-center justify-between"><code className="text-xs text-white">{truncateHash(release.commit, 9, 7)}</code><CopyButton text={release.commit} /></div></div>
+              <div className="p-3 rounded-lg bg-brand-bg-deep/60 border border-brand-border"><span className="text-[10px] uppercase text-brand-muted">Artifact</span><div className="mt-1 flex items-center justify-between gap-2"><code className="text-xs text-white truncate">{release.artifactName}</code><CopyButton text={release.artifactName} /></div></div>
+              <div className="p-3 rounded-lg bg-brand-bg-deep/60 border border-brand-border"><span className="text-[10px] uppercase text-brand-muted">Candidate SHA-256</span><div className="mt-1 flex items-center justify-between"><code className="text-xs text-white">{truncateHash(release.publishedArtifactHash, 9, 7)}</code><CopyButton text={release.publishedArtifactHash} /></div></div>
             </div>
 
-            {verification.auditChainHash && (
-              <div className="mt-3 p-3 rounded-lg bg-brand-bg-deep/40 border border-brand-border flex items-center justify-between text-xs font-mono">
-                <span className="text-brand-muted text-[11px]">Audit Chain Head:</span>
-                <div className="flex items-center gap-1.5 text-quorum-green-light">
-                  <span>{truncateHash(verification.auditChainHash, 16, 12)}</span>
-                  <CopyButton text={verification.auditChainHash} title="Copy audit chain head" />
-                </div>
-              </div>
-            )}
+            {verification.auditChainHash && <div className="rounded-lg bg-brand-bg-deep/50 border border-brand-border p-3 flex items-center justify-between gap-3"><div className="flex items-center gap-2 text-xs text-brand-muted"><Link2 className="w-4 h-4" />Audit chain head</div><div className="flex items-center gap-2"><code className="text-xs text-quorum-green-light">{truncateHash(verification.auditChainHash, 14, 10)}</code><CopyButton text={verification.auditChainHash} /></div></div>}
+
+            <div className="p-3 rounded-lg bg-quorum-blue-bg/30 border border-quorum-blue-border/50 text-xs text-brand-muted flex items-start gap-2"><Info className="w-4 h-4 text-quorum-blue-light flex-shrink-0" /><span>A valid signature identifies a builder; reproducible agreement between independent builders is what establishes artifact trust.</span></div>
           </div>
         )}
       </div>
 
-      {/* Verification Multi-Step Progress Modal */}
-      <VerificationProgressModal
-        isOpen={isVerifyingModalOpen}
-        onComplete={handleModalFinished}
-        targetPackage={`${release.name} (${release.version})`}
-      />
+      <VerificationProgressModal isOpen={isVerifyingModalOpen} onComplete={handleModalFinished} targetPackage={`${release.name} (${release.version})`} />
     </div>
   );
 };

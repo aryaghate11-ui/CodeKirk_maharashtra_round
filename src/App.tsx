@@ -64,7 +64,7 @@ export const App: React.FC = () => {
       )}
 
       {currentPage === 'verification' && (
-        <ReleaseVerificationPage selectedReleaseId={selectedReleaseId} />
+        <ReleaseVerificationPage selectedReleaseId={selectedReleaseId} onNavigate={setCurrentPage} />
       )}
 
       {currentPage === 'builders' && <BuildersPage />}
