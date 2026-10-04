@@ -33,6 +33,9 @@ import {
   VerifiedReleaseItem,
   CreateMonitorInput,
   UpdateMonitorInput,
+  GitHubReleaseInfo,
+  EstablishBaselineInput,
+  RelayBaselineEvent,
 } from '../types/relay';
 import {
   CreateLivingIncident,
@@ -739,6 +742,21 @@ class QuorumApiService {
     return await res.json();
   }
 
+  public async getGitHubReleaseInfo(repo: string, tag?: string): Promise<GitHubReleaseInfo> {
+    const url = new URL(`${API_BASE}/relay/github-releases`);
+    url.searchParams.set('repo', repo.trim());
+    if (tag && tag.trim()) {
+      url.searchParams.set('tag', tag.trim());
+    }
+    const res = await fetch(url.toString());
+    if (!res.ok) {
+      const errBody = await res.json().catch(() => ({}));
+      const msg = errBody.detail || `Status ${res.status}: Failed to fetch GitHub release information`;
+      throw new BackendError(msg, res.status, '/relay/github-releases');
+    }
+    return await res.json();
+  }
+
   public async getRelayMonitors(): Promise<ArtifactMonitor[]> {
     const res = await fetch(`${API_BASE}/relay/monitors`);
     if (!res.ok) throw new BackendError(`Status ${res.status}: Failed to fetch Relay monitors`, res.status, '/relay/monitors');
@@ -849,6 +867,26 @@ class QuorumApiService {
   public async reevaluateLivingReleases(): Promise<{ reevaluated: number; trust_degraded: number; assessments: LivingAssessment[] }> {
     const res = await fetch(`${API_BASE}/living/re-evaluate`, { method: 'POST' });
     if (!res.ok) throw new BackendError(`Status ${res.status}: Re-evaluation failed`, res.status, '/living/re-evaluate');
+    return await res.json();
+  }
+
+  public async establishRelayBaseline(id: string, req: EstablishBaselineInput): Promise<ArtifactMonitor> {
+    const res = await fetch(`${API_BASE}/relay/monitors/${encodeURIComponent(id)}/baseline`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(req),
+    });
+    if (!res.ok) {
+      const errBody = await res.json().catch(() => ({}));
+      const msg = errBody.detail || `Status ${res.status}: Failed to establish trusted baseline`;
+      throw new BackendError(msg, res.status, `/relay/monitors/${id}/baseline`);
+    }
+    return await res.json();
+  }
+
+  public async getRelayBaselineHistory(id: string): Promise<RelayBaselineEvent[]> {
+    const res = await fetch(`${API_BASE}/relay/monitors/${encodeURIComponent(id)}/baseline-history`);
+    if (!res.ok) throw new BackendError(`Status ${res.status}: Failed to fetch monitor baseline history`, res.status, `/relay/monitors/${id}/baseline-history`);
     return await res.json();
   }
 }

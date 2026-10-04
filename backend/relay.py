@@ -93,7 +93,13 @@ def init_relay_db(db: sqlite3.Connection | None = None) -> None:
                 last_result TEXT, -- 'MATCH', 'MISMATCH', 'ERROR', 'PENDING'
                 last_observed_sha256 TEXT,
                 last_error_summary TEXT,
-                next_check_at TEXT
+                next_check_at TEXT,
+                trusted_baseline_sha256 TEXT,
+                baseline_established_at TEXT,
+                baseline_approved_by TEXT,
+                baseline_approval_notes TEXT,
+                previous_baseline_sha256 TEXT,
+                last_baseline_result TEXT DEFAULT 'NOT_ESTABLISHED'
             );
 
             CREATE TABLE IF NOT EXISTS relay_checks (
@@ -106,7 +112,23 @@ def init_relay_db(db: sqlite3.Connection | None = None) -> None:
                 http_status INTEGER,
                 response_time_ms INTEGER NOT NULL,
                 error_summary TEXT,
-                checked_at TEXT NOT NULL
+                checked_at TEXT NOT NULL,
+                trusted_baseline_sha256 TEXT,
+                baseline_result TEXT,
+                baseline_change_detected INTEGER NOT NULL DEFAULT 0
+            );
+
+            CREATE TABLE IF NOT EXISTS relay_baseline_events (
+                id TEXT PRIMARY KEY,
+                monitor_id TEXT NOT NULL REFERENCES artifact_monitors(id) ON DELETE CASCADE,
+                event_type TEXT NOT NULL, -- 'BASELINE_ESTABLISHED', 'BASELINE_UPDATED', 'BASELINE_DIVERGENCE'
+                previous_baseline_sha256 TEXT,
+                trusted_baseline_sha256 TEXT,
+                observed_sha256 TEXT,
+                artifact_url TEXT NOT NULL,
+                approved_by TEXT,
+                notes TEXT,
+                created_at TEXT NOT NULL
             );
 
             CREATE INDEX IF NOT EXISTS idx_artifact_monitors_created_at
@@ -114,8 +136,39 @@ def init_relay_db(db: sqlite3.Connection | None = None) -> None:
 
             CREATE INDEX IF NOT EXISTS idx_relay_checks_monitor_id
             ON relay_checks(monitor_id, checked_at DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_relay_baseline_events_monitor_id
+            ON relay_baseline_events(monitor_id, created_at DESC);
             """
         )
+
+        # Migrate existing schema tables if missing baseline columns
+        try:
+            m_cols = {row["name"] for row in db.execute("PRAGMA table_info(artifact_monitors)").fetchall()}
+            for col_name, col_def in [
+                ("trusted_baseline_sha256", "TEXT"),
+                ("baseline_established_at", "TEXT"),
+                ("baseline_approved_by", "TEXT"),
+                ("baseline_approval_notes", "TEXT"),
+                ("previous_baseline_sha256", "TEXT"),
+                ("last_baseline_result", "TEXT DEFAULT 'NOT_ESTABLISHED'"),
+            ]:
+                if col_name not in m_cols:
+                    db.execute(f"ALTER TABLE artifact_monitors ADD COLUMN {col_name} {col_def}")
+        except Exception:
+            pass
+
+        try:
+            c_cols = {row["name"] for row in db.execute("PRAGMA table_info(relay_checks)").fetchall()}
+            for col_name, col_def in [
+                ("trusted_baseline_sha256", "TEXT"),
+                ("baseline_result", "TEXT"),
+                ("baseline_change_detected", "INTEGER NOT NULL DEFAULT 0"),
+            ]:
+                if col_name not in c_cols:
+                    db.execute(f"ALTER TABLE relay_checks ADD COLUMN {col_name} {col_def}")
+        except Exception:
+            pass
         count = db.execute("SELECT COUNT(*) FROM artifact_monitors").fetchone()[0]
         if count == 0:
             try:
@@ -400,12 +453,157 @@ def download_and_hash_artifact(url: str) -> tuple[str, int, int]:
             raise ValueError("Request timed out during artifact retrieval.")
 
 
+def safe_fetch_text(
+    url: str,
+    max_bytes: int = 1024 * 1024,
+    extra_headers: dict[str, str] | None = None,
+) -> tuple[str, int]:
+    """
+    Safely retrieves text content from a public HTTPS URL using SSRFSafeHTTPSHandler.
+    Validates redirects, peer IPs, and enforces size limit.
+    Returns: (text_content, status_code)
+    """
+    current_url = url
+    redirects_followed = 0
+
+    while True:
+        validate_public_https_url(current_url)
+
+        headers = {
+            "User-Agent": "Quorum-Relay-Worker/1.0 (Decentralized Build Verifier)",
+            "Accept": "*/*",
+        }
+        if extra_headers:
+            headers.update(extra_headers)
+
+        req = urllib.request.Request(current_url, headers=headers)
+        opener = urllib.request.build_opener(SSRFSafeHTTPSHandler, NoRedirectHandler)
+
+        try:
+            with opener.open(req, timeout=CONNECT_TIMEOUT_SECONDS + READ_TIMEOUT_SECONDS) as resp:
+                status_code = resp.status
+
+                if status_code in (301, 302, 303, 307, 308):
+                    redirects_followed += 1
+                    if redirects_followed > MAX_REDIRECTS:
+                        raise ValueError(f"Exceeded maximum allowed redirects ({MAX_REDIRECTS}).")
+                    redirect_target = resp.headers.get("Location")
+                    if not redirect_target:
+                        raise ValueError("Received redirect status without Location header.")
+                    current_url = urllib.parse.urljoin(current_url, redirect_target)
+                    continue
+
+                if status_code != 200:
+                    raise ValueError(f"Server returned HTTP {status_code}.")
+
+                cl_header = resp.headers.get("Content-Length")
+                if cl_header:
+                    try:
+                        content_length = int(cl_header)
+                        if content_length > max_bytes:
+                            raise ValueError(
+                                f"Content-Length ({content_length} bytes) exceeds limit of {max_bytes} bytes."
+                            )
+                    except ValueError as val_err:
+                        if "exceeds limit" in str(val_err):
+                            raise
+
+                chunks: list[bytes] = []
+                total_bytes = 0
+                chunk_size = 16 * 1024
+
+                while True:
+                    chunk = resp.read(chunk_size)
+                    if not chunk:
+                        break
+                    total_bytes += len(chunk)
+                    if total_bytes > max_bytes:
+                        raise ValueError(
+                            f"Downloaded bytes exceeded maximum allowed text size ({max_bytes} bytes)."
+                        )
+                    chunks.append(chunk)
+
+                raw_bytes = b"".join(chunks)
+                text = raw_bytes.decode("utf-8", errors="replace")
+                return text, status_code
+
+        except urllib.error.HTTPError as e:
+            if e.code in (301, 302, 303, 307, 308):
+                redirects_followed += 1
+                if redirects_followed > MAX_REDIRECTS:
+                    raise ValueError(f"Exceeded maximum allowed redirects ({MAX_REDIRECTS}).")
+                redirect_target = e.headers.get("Location")
+                if not redirect_target:
+                    raise ValueError("Received redirect status without Location header.")
+                current_url = urllib.parse.urljoin(current_url, redirect_target)
+                continue
+            raise ValueError(f"HTTP {e.code}: {e.reason}")
+        except urllib.error.URLError as e:
+            raise ValueError(f"Connection failed: {e.reason}")
+        except socket.timeout:
+            raise ValueError("Request timed out during retrieval.")
+
+
+def parse_checksum_manifest(content: str) -> dict[str, str]:
+    """
+    Parses a checksum manifest and returns a mapping of {basename: sha256_hex}.
+    Supports:
+    1. Standard GNU/POSIX sha256sum: '<hash>  [*]<filename>'
+    2. BSD style: 'SHA256 (<filename>) = <hash>'
+    3. Single raw 64-char hex string
+    """
+    mapping: dict[str, str] = {}
+    lines = content.splitlines()
+    clean_lines = [l.strip() for l in lines if l.strip() and not l.strip().startswith("#")]
+
+    # If the file contains exactly one line with just a 64-character hash
+    if len(clean_lines) == 1 and re.match(r"^[0-9a-fA-F]{64}$", clean_lines[0]):
+        mapping["*"] = clean_lines[0].lower()
+        return mapping
+
+    for line in clean_lines:
+        # Check BSD style: SHA256 (filename) = hash
+        bsd_match = re.match(r"^SHA256\s*\((.+?)\)\s*=\s*([0-9a-fA-F]{64})$", line)
+        if bsd_match:
+            filename = os.path.basename(bsd_match.group(1).strip().replace("\\", "/"))
+            hash_val = bsd_match.group(2).strip().lower()
+            mapping[filename] = hash_val
+            continue
+
+        # Standard style: <hash> [*]<filename>
+        std_match = re.match(r"^([0-9a-fA-F]{64})\s+[*]?(.+)$", line)
+        if std_match:
+            hash_val = std_match.group(1).strip().lower()
+            file_part = std_match.group(2).strip()
+            filename = os.path.basename(file_part.replace("\\", "/"))
+            mapping[filename] = hash_val
+            continue
+
+    return mapping
+
+
+def normalize_github_repo(repo_input: str) -> tuple[str, str]:
+    """Normalizes 'owner/repo' or 'https://github.com/owner/repo' into (owner, repo)."""
+    s = repo_input.strip()
+    m_url = re.match(r"^https://github\.com/([a-zA-Z0-9_.-]+)/([a-zA-Z0-9_.-]+?)(?:\.git|/)?$", s)
+    if m_url:
+        return m_url.group(1), m_url.group(2)
+    m_short = re.match(r"^([a-zA-Z0-9_.-]+)/([a-zA-Z0-9_.-]+)$", s)
+    if m_short:
+        return m_short.group(1), m_short.group(2)
+    raise ValueError(
+        f"Invalid repository format '{repo_input}'. Expected 'owner/repo' or 'https://github.com/owner/repo'."
+    )
+
+
 # -----------------------------------------------------------------------------
 # Pydantic Schemas
 # -----------------------------------------------------------------------------
 CheckResult = Literal["MATCH", "MISMATCH", "ERROR"]
 MonitorStatus = Literal["MATCH", "MISMATCH", "ERROR", "PENDING"]
 ProvenanceType = Literal["VERIFIED_RELEASE_CONSENSUS", "MANUAL_UNVERIFIED"]
+BaselineResult = Literal["MATCH", "CHANGED", "NOT_ESTABLISHED", "ERROR"]
+BaselineStatus = Literal["MATCH", "CHANGED", "NOT_ESTABLISHED", "ERROR", "PENDING"]
 
 
 class ArtifactMonitorCreate(BaseModel):
@@ -439,6 +637,32 @@ class ArtifactMonitorUpdate(BaseModel):
     check_interval_seconds: int | None = Field(default=None, ge=MIN_CHECK_INTERVAL, le=86400 * 7)
 
 
+class EstablishBaselineRequest(BaseModel):
+    baseline_sha256: str = Field(..., description="The SHA-256 hash to establish as trusted baseline")
+    approved_by: str = Field(default="Security Operator", min_length=1, max_length=100, description="Operator approving baseline")
+    notes: str | None = Field(default=None, max_length=500, description="Optional approval notes or context")
+
+    @field_validator("baseline_sha256")
+    def validate_hash(cls, v: str) -> str:
+        clean = v.strip().lower()
+        if not re.match(r"^[0-9a-f]{64}$", clean):
+            raise ValueError("baseline_sha256 must be a 64-character hexadecimal SHA-256 hash.")
+        return clean
+
+
+class BaselineEventResponse(BaseModel):
+    id: str
+    monitor_id: str
+    event_type: str
+    previous_baseline_sha256: str | None = None
+    trusted_baseline_sha256: str | None = None
+    observed_sha256: str | None = None
+    artifact_url: str
+    approved_by: str | None = None
+    notes: str | None = None
+    created_at: str
+
+
 class ArtifactMonitorResponse(BaseModel):
     id: str
     name: str
@@ -457,6 +681,12 @@ class ArtifactMonitorResponse(BaseModel):
     last_error_summary: str | None
     next_check_at: str | None
     total_checks_count: int
+    trusted_baseline_sha256: str | None = None
+    baseline_established_at: str | None = None
+    baseline_approved_by: str | None = None
+    baseline_approval_notes: str | None = None
+    previous_baseline_sha256: str | None = None
+    last_baseline_result: BaselineStatus = "NOT_ESTABLISHED"
 
 
 class RelayCheckResponse(BaseModel):
@@ -470,6 +700,9 @@ class RelayCheckResponse(BaseModel):
     response_time_ms: int
     error_summary: str | None
     checked_at: str
+    trusted_baseline_sha256: str | None = None
+    baseline_result: BaselineResult | None = None
+    baseline_change_detected: bool = False
 
 
 class RelayStatsResponse(BaseModel):
@@ -479,6 +712,8 @@ class RelayStatsResponse(BaseModel):
     matches_count: int
     mismatches_count: int
     errors_count: int
+    baselines_established_count: int = 0
+    baseline_changes_count: int = 0
     latest_check: RelayCheckResponse | None
 
 
@@ -488,7 +723,35 @@ class VerifiedReleaseItem(BaseModel):
     repository_url: str
     source_commit: str
     consensus_sha256: str
+    threshold: int = 2
+    expected_builders: int = 3
+    attestation_count: int = 0
     created_at: str
+
+
+class GitHubReleaseAsset(BaseModel):
+    name: str
+    download_url: str
+    size_bytes: int
+    content_type: str | None = None
+    expected_sha256: str | None = None
+    hash_source: str | None = None
+    is_manifest: bool = False
+
+
+class GitHubReleaseInfo(BaseModel):
+    repository: str
+    tag_name: str
+    release_name: str
+    published_at: str | None = None
+    html_url: str
+    manifest_found: bool
+    manifest_name: str | None = None
+    manifest_url: str | None = None
+    manifest_signed: bool = False
+    signature_asset_name: str | None = None
+    assets: list[GitHubReleaseAsset]
+    provenance_note: str
 
 
 # -----------------------------------------------------------------------------
@@ -536,6 +799,21 @@ def perform_monitor_check(monitor_id: str) -> RelayCheckResponse:
 
         elapsed_ms = int((time.perf_counter() - start_time) * 1000)
 
+        # Baseline Comparison (independent of expected_sha256)
+        trusted_baseline = monitor["trusted_baseline_sha256"]
+        baseline_result: BaselineResult
+        baseline_change_detected = False
+
+        if observed_sha256 is None:
+            baseline_result = "ERROR"
+        elif not trusted_baseline:
+            baseline_result = "NOT_ESTABLISHED"
+        elif observed_sha256.lower() == trusted_baseline.lower():
+            baseline_result = "MATCH"
+        else:
+            baseline_result = "CHANGED"
+            baseline_change_detected = True
+
         # Compute next scheduled check time
         interval = monitor["check_interval_seconds"] or DEFAULT_CHECK_INTERVAL
         next_check = (datetime.now(timezone.utc) + timedelta(seconds=interval)).isoformat(timespec="seconds")
@@ -545,8 +823,9 @@ def perform_monitor_check(monitor_id: str) -> RelayCheckResponse:
                 """
                 INSERT INTO relay_checks
                     (id, monitor_id, result, expected_sha256, observed_sha256,
-                     bytes_downloaded, http_status, response_time_ms, error_summary, checked_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     bytes_downloaded, http_status, response_time_ms, error_summary, checked_at,
+                     trusted_baseline_sha256, baseline_result, baseline_change_detected)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     check_id,
@@ -559,6 +838,9 @@ def perform_monitor_check(monitor_id: str) -> RelayCheckResponse:
                     elapsed_ms,
                     error_summary,
                     checked_at,
+                    trusted_baseline,
+                    baseline_result,
+                    1 if baseline_change_detected else 0,
                 ),
             )
 
@@ -566,7 +848,7 @@ def perform_monitor_check(monitor_id: str) -> RelayCheckResponse:
                 """
                 UPDATE artifact_monitors
                 SET last_checked_at = ?, last_result = ?, last_observed_sha256 = ?,
-                    last_error_summary = ?, next_check_at = ?
+                    last_error_summary = ?, next_check_at = ?, last_baseline_result = ?
                 WHERE id = ?
                 """,
                 (
@@ -575,9 +857,34 @@ def perform_monitor_check(monitor_id: str) -> RelayCheckResponse:
                     observed_sha256,
                     error_summary,
                     next_check,
+                    baseline_result,
                     monitor_id,
                 ),
             )
+
+            # Audit baseline change if diverged from approved trusted baseline
+            if baseline_change_detected and trusted_baseline:
+                db.execute(
+                    """
+                    INSERT INTO relay_baseline_events
+                        (id, monitor_id, event_type, previous_baseline_sha256,
+                         trusted_baseline_sha256, observed_sha256, artifact_url,
+                         approved_by, notes, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        str(uuid.uuid4()),
+                        monitor_id,
+                        "BASELINE_DIVERGENCE",
+                        monitor["previous_baseline_sha256"],
+                        trusted_baseline,
+                        observed_sha256,
+                        url,
+                        "SYSTEM_MONITOR",
+                        "Observed artifact SHA-256 diverged from established trusted baseline.",
+                        checked_at,
+                    ),
+                )
 
             # Audit Trail Integration: if linked to a valid release, append audit event
             release_id = monitor["release_id"]
@@ -599,6 +906,8 @@ def perform_monitor_check(monitor_id: str) -> RelayCheckResponse:
                         "bytes_downloaded": bytes_downloaded,
                         "artifact_url": url,
                         "provenance": monitor["provenance"],
+                        "baseline_result": baseline_result,
+                        "trusted_baseline_sha256": trusted_baseline,
                     }
                     if result == "MISMATCH":
                         event_data["security_alert"] = "POTENTIAL_POST_VERIFICATION_TAMPERING"
@@ -614,6 +923,30 @@ def perform_monitor_check(monitor_id: str) -> RelayCheckResponse:
                         (release_id, event_type, event_json, prev_hash, event_hash, checked_at),
                     )
 
+                    # If baseline divergence occurred on a release-backed monitor, record separate baseline audit event
+                    if baseline_change_detected and trusted_baseline:
+                        b_event_type = "relay.baseline_divergence"
+                        b_event_data = {
+                            "monitor_id": monitor_id,
+                            "monitor_name": monitor["name"],
+                            "artifact_url": url,
+                            "trusted_baseline_sha256": trusted_baseline,
+                            "observed_sha256": observed_sha256,
+                            "timestamp": checked_at,
+                            "alert": "BASELINE_CHANGED",
+                            "description": "Artifact hash diverged from established trusted baseline. Review before re-approving.",
+                        }
+                        b_event_json = json.dumps(b_event_data, sort_keys=True, separators=(",", ":"))
+                        b_event_hash = hashlib.sha256(f"{event_hash}|{b_event_type}|{b_event_json}|{checked_at}".encode()).hexdigest()
+                        db.execute(
+                            """
+                            INSERT INTO audit_events
+                                (release_id, event_type, event_json, previous_hash, event_hash, created_at)
+                            VALUES (?, ?, ?, ?, ?, ?)
+                            """,
+                            (release_id, b_event_type, b_event_json, event_hash, b_event_hash, checked_at),
+                        )
+
         return RelayCheckResponse(
             id=check_id,
             monitor_id=monitor_id,
@@ -625,6 +958,9 @@ def perform_monitor_check(monitor_id: str) -> RelayCheckResponse:
             response_time_ms=elapsed_ms,
             error_summary=error_summary,
             checked_at=checked_at,
+            trusted_baseline_sha256=trusted_baseline,
+            baseline_result=baseline_result,
+            baseline_change_detected=baseline_change_detected,
         )
 
     finally:
@@ -710,6 +1046,8 @@ def get_relay_stats() -> dict[str, Any]:
         matches = db.execute("SELECT COUNT(*) FROM relay_checks WHERE result = 'MATCH'").fetchone()[0]
         mismatches = db.execute("SELECT COUNT(*) FROM relay_checks WHERE result = 'MISMATCH'").fetchone()[0]
         errors = db.execute("SELECT COUNT(*) FROM relay_checks WHERE result = 'ERROR'").fetchone()[0]
+        baselines_established = db.execute("SELECT COUNT(*) FROM artifact_monitors WHERE trusted_baseline_sha256 IS NOT NULL").fetchone()[0]
+        baseline_changes = db.execute("SELECT COUNT(*) FROM relay_checks WHERE baseline_change_detected = 1").fetchone()[0]
 
         latest_row = db.execute(
             """
@@ -720,6 +1058,8 @@ def get_relay_stats() -> dict[str, Any]:
         ).fetchone()
 
         latest_check = dict(latest_row) if latest_row else None
+        if latest_check:
+            latest_check["baseline_change_detected"] = bool(latest_check.get("baseline_change_detected", 0))
 
         return {
             "total_monitors": total_monitors,
@@ -728,6 +1068,8 @@ def get_relay_stats() -> dict[str, Any]:
             "matches_count": matches,
             "mismatches_count": mismatches,
             "errors_count": errors,
+            "baselines_established_count": baselines_established,
+            "baseline_changes_count": baseline_changes,
             "latest_check": latest_check,
         }
 
@@ -738,15 +1080,191 @@ def list_eligible_verified_releases() -> list[dict[str, Any]]:
     with connect() as db:
         rows = db.execute(
             """
-            SELECT id AS release_id, artifact_name, repository_url, source_commit,
-                   consensus_sha256, created_at
-            FROM releases
-            WHERE status = 'verified' AND consensus_sha256 IS NOT NULL
-            ORDER BY created_at DESC
+            SELECT r.id AS release_id, r.artifact_name, r.repository_url, r.source_commit,
+                   r.consensus_sha256, r.threshold, r.expected_builders, r.created_at,
+                   (SELECT COUNT(*) FROM attestations a WHERE a.release_id = r.id AND a.signature_valid = 1) AS attestation_count
+            FROM releases r
+            WHERE r.status = 'verified' AND r.consensus_sha256 IS NOT NULL
+            ORDER BY r.created_at DESC
             LIMIT 50
             """
         ).fetchall()
         return [dict(r) for r in rows]
+
+
+def fetch_github_release_info(repo_input: str, tag: str | None = None) -> GitHubReleaseInfo:
+    """
+    Safely retrieves release metadata, assets, and parsed checksum manifest from public GitHub.
+    Uses SSRFSafeHTTPSHandler for all network calls with redirect and size validations.
+    """
+    try:
+        owner, repo = normalize_github_repo(repo_input)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    if tag and tag.strip():
+        clean_tag = tag.strip()
+        api_url = f"https://api.github.com/repos/{owner}/{repo}/releases/tags/{urllib.parse.quote(clean_tag)}"
+    else:
+        api_url = f"https://api.github.com/repos/{owner}/{repo}/releases/latest"
+
+    try:
+        json_text, _ = safe_fetch_text(
+            api_url,
+            max_bytes=2 * 1024 * 1024,
+            extra_headers={"Accept": "application/vnd.github.v3+json"},
+        )
+        release_data = json.loads(json_text)
+    except ValueError as e:
+        err_msg = str(e)
+        if "404" in err_msg:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Public GitHub repository '{owner}/{repo}' or release was not found.",
+            )
+        if "403" in err_msg or "429" in err_msg:
+            raise HTTPException(
+                status_code=429,
+                detail="GitHub API rate limit exceeded or access forbidden. Please try again later or supply the expected hash manually.",
+            )
+        raise HTTPException(status_code=502, detail=f"Failed to query GitHub release: {err_msg}")
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=502, detail="Invalid JSON response received from GitHub API.")
+
+    tag_name = release_data.get("tag_name") or "unknown"
+    release_name = release_data.get("name") or tag_name
+    published_at = release_data.get("published_at")
+    html_url = release_data.get("html_url") or f"https://github.com/{owner}/{repo}/releases"
+    raw_assets = release_data.get("assets", [])
+
+    # Classify manifest vs binary distribution assets
+    manifest_asset = None
+    signature_asset_name = None
+    manifest_map: dict[str, str] = {}
+
+    # Look for signature files
+    for a in raw_assets:
+        name_lower = a.get("name", "").lower()
+        if name_lower.endswith((".asc", ".sig", ".minisig", ".pem")):
+            signature_asset_name = a.get("name")
+            break
+
+    # Look for unified checksum manifest
+    for a in raw_assets:
+        name_lower = a.get("name", "").lower()
+        if any(keyword in name_lower for keyword in ("checksum", "sha256sums", "sha256sum", "shasums")):
+            if not name_lower.endswith((".asc", ".sig", ".minisig", ".pem")):
+                manifest_asset = a
+                break
+
+    manifest_found = False
+    manifest_name = None
+    manifest_url = None
+
+    if manifest_asset:
+        manifest_url = manifest_asset.get("browser_download_url")
+        manifest_name = manifest_asset.get("name")
+        if manifest_url:
+            try:
+                manifest_text, _ = safe_fetch_text(manifest_url, max_bytes=1024 * 1024)
+                manifest_map = parse_checksum_manifest(manifest_text)
+                if manifest_map:
+                    manifest_found = True
+            except Exception:
+                pass
+
+    # Build asset models
+    distribution_assets: list[GitHubReleaseAsset] = []
+    for a in raw_assets:
+        aname = a.get("name", "")
+        aname_lower = aname.lower()
+        is_manifest = (
+            (manifest_asset is not None and aname == manifest_asset.get("name"))
+            or aname_lower.endswith((".asc", ".sig", ".minisig", ".pem"))
+        )
+
+        expected_hash = manifest_map.get(aname)
+        hash_source = f"Manifest: {manifest_name}" if expected_hash and manifest_name else None
+
+        # Check for companion .sha256 file if not found in unified manifest
+        if not expected_hash and not is_manifest:
+            companion_name = f"{aname}.sha256"
+            companion_asset = next((x for x in raw_assets if x.get("name") == companion_name), None)
+            if companion_asset and companion_asset.get("browser_download_url"):
+                try:
+                    c_text, _ = safe_fetch_text(companion_asset["browser_download_url"], max_bytes=64 * 1024)
+                    c_map = parse_checksum_manifest(c_text)
+                    if aname in c_map:
+                        expected_hash = c_map[aname]
+                        hash_source = f"Manifest: {companion_name}"
+                        manifest_found = True
+                    elif "*" in c_map:
+                        expected_hash = c_map["*"]
+                        hash_source = f"Manifest: {companion_name}"
+                        manifest_found = True
+                    elif re.match(r"^[0-9a-fA-F]{64}$", c_text.strip()):
+                        expected_hash = c_text.strip().lower()
+                        hash_source = f"Manifest: {companion_name}"
+                        manifest_found = True
+                except Exception:
+                    pass
+
+        distribution_assets.append(
+            GitHubReleaseAsset(
+                name=aname,
+                download_url=a.get("browser_download_url", ""),
+                size_bytes=a.get("size", 0),
+                content_type=a.get("content_type"),
+                expected_sha256=expected_hash,
+                hash_source=hash_source,
+                is_manifest=is_manifest,
+            )
+        )
+
+    if manifest_found:
+        if signature_asset_name:
+            provenance_note = (
+                f"Expected SHA-256 extracted from author release manifest '{manifest_name}' "
+                f"(accompanied by signature asset '{signature_asset_name}'). "
+                "Author Reference (MANUAL_UNVERIFIED). Note: Not an attested multi-builder Quorum consensus."
+            )
+        else:
+            provenance_note = (
+                f"Expected SHA-256 extracted from author release manifest '{manifest_name}'. "
+                "Author Reference (MANUAL_UNVERIFIED). Note: Not an attested multi-builder Quorum consensus."
+            )
+    else:
+        provenance_note = (
+            "No author SHA-256 checksum manifest was detected for this release. "
+            "You can supply a manual reference hash or choose an existing Quorum verified release."
+        )
+
+    return GitHubReleaseInfo(
+        repository=f"{owner}/{repo}",
+        tag_name=tag_name,
+        release_name=release_name,
+        published_at=published_at,
+        html_url=html_url,
+        manifest_found=manifest_found,
+        manifest_name=manifest_name,
+        manifest_url=manifest_url,
+        manifest_signed=bool(signature_asset_name),
+        signature_asset_name=signature_asset_name,
+        assets=distribution_assets,
+        provenance_note=provenance_note,
+    )
+
+
+@relay_router.get("/github-releases", response_model=GitHubReleaseInfo)
+def get_github_releases(
+    repo: str = Query(..., min_length=2, max_length=200, description="GitHub repository (owner/repo or URL)"),
+    tag: str | None = Query(None, max_length=100, description="Optional release tag"),
+) -> GitHubReleaseInfo:
+    """
+    Inspects a public GitHub repository release, discovers release assets,
+    and parses author-published SHA-256 checksum manifests using SSRF-safe retrieval.
+    """
+    return fetch_github_release_info(repo, tag)
 
 
 @relay_router.get("/monitors", response_model=list[ArtifactMonitorResponse])
@@ -769,6 +1287,7 @@ def list_monitors() -> list[dict[str, Any]]:
             d = dict(r)
             d["enabled"] = bool(d["enabled"])
             d["last_result"] = d["last_result"] or "PENDING"
+            d["last_baseline_result"] = d.get("last_baseline_result") or ("NOT_ESTABLISHED" if not d.get("trusted_baseline_sha256") else "PENDING")
             results.append(d)
         return results
 
@@ -810,8 +1329,9 @@ def create_monitor(data: ArtifactMonitorCreate) -> dict[str, Any]:
             INSERT INTO artifact_monitors
                 (id, name, artifact_url, expected_sha256, release_id, provenance,
                  description, enabled, check_interval_seconds, created_at, last_checked_at,
-                 last_result, last_observed_sha256, last_error_summary, next_check_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, NULL, 'PENDING', NULL, NULL, ?)
+                 last_result, last_observed_sha256, last_error_summary, next_check_at,
+                 trusted_baseline_sha256, last_baseline_result)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, NULL, 'PENDING', NULL, NULL, ?, NULL, 'NOT_ESTABLISHED')
             """,
             (
                 monitor_id,
@@ -852,6 +1372,7 @@ def get_monitor(monitor_id: str) -> dict[str, Any]:
         d = dict(row)
         d["enabled"] = bool(d["enabled"])
         d["last_result"] = d["last_result"] or "PENDING"
+        d["last_baseline_result"] = d.get("last_baseline_result") or ("NOT_ESTABLISHED" if not d.get("trusted_baseline_sha256") else "PENDING")
         return d
 
 
@@ -926,5 +1447,137 @@ def get_monitor_history(monitor_id: str, limit: int = Query(default=50, ge=1, le
             LIMIT ?
             """,
             (monitor_id, limit),
+        ).fetchall()
+        results = []
+        for r in rows:
+            d = dict(r)
+            d["baseline_change_detected"] = bool(d.get("baseline_change_detected", 0))
+            results.append(d)
+        return results
+
+
+@relay_router.post("/monitors/{monitor_id}/baseline", response_model=ArtifactMonitorResponse)
+def establish_monitor_baseline(monitor_id: str, data: EstablishBaselineRequest) -> dict[str, Any]:
+    """
+    Explicitly establishes or updates an approved Trusted Baseline SHA-256 hash for a monitor.
+    Preserves previous baseline, records operator identity and approval notes,
+    and appends an immutable audit event to both monitor baseline events and Quorum audit history.
+    """
+    init_relay_db()
+    with connect() as db:
+        monitor = db.execute("SELECT * FROM artifact_monitors WHERE id = ?", (monitor_id,)).fetchone()
+        if not monitor:
+            raise HTTPException(status_code=404, detail=f"Monitor '{monitor_id}' not found.")
+
+        old_baseline = monitor["trusted_baseline_sha256"]
+        new_baseline = data.baseline_sha256.lower().strip()
+        now_str = utc_now()
+        event_type = "BASELINE_UPDATED" if old_baseline else "BASELINE_ESTABLISHED"
+
+        # Determine last_baseline_result based on latest observed SHA-256
+        last_obs = monitor["last_observed_sha256"]
+        if last_obs:
+            baseline_result = "MATCH" if last_obs.lower() == new_baseline else "CHANGED"
+        else:
+            baseline_result = "PENDING"
+
+        # Update monitor record
+        db.execute(
+            """
+            UPDATE artifact_monitors
+            SET trusted_baseline_sha256 = ?,
+                baseline_established_at = ?,
+                baseline_approved_by = ?,
+                baseline_approval_notes = ?,
+                previous_baseline_sha256 = ?,
+                last_baseline_result = ?
+            WHERE id = ?
+            """,
+            (
+                new_baseline,
+                now_str,
+                data.approved_by.strip(),
+                data.notes.strip() if data.notes else None,
+                old_baseline,
+                baseline_result,
+                monitor_id,
+            ),
+        )
+
+        # Record in relay_baseline_events
+        baseline_event_id = str(uuid.uuid4())
+        db.execute(
+            """
+            INSERT INTO relay_baseline_events
+                (id, monitor_id, event_type, previous_baseline_sha256,
+                 trusted_baseline_sha256, observed_sha256, artifact_url,
+                 approved_by, notes, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                baseline_event_id,
+                monitor_id,
+                event_type,
+                old_baseline,
+                new_baseline,
+                last_obs,
+                monitor["artifact_url"],
+                data.approved_by.strip(),
+                data.notes.strip() if data.notes else None,
+                now_str,
+            ),
+        )
+
+        # Audit Trail Integration: if linked to a valid release, append audit event to audit_events chain
+        release_id = monitor["release_id"]
+        if release_id:
+            rel = db.execute("SELECT id FROM releases WHERE id = ?", (release_id,)).fetchone()
+            if rel:
+                prev_row = db.execute(
+                    "SELECT event_hash FROM audit_events WHERE release_id = ? ORDER BY id DESC LIMIT 1",
+                    (release_id,),
+                ).fetchone()
+                prev_hash = prev_row["event_hash"] if prev_row else "0" * 64
+                audit_event_type = "relay.baseline_established" if event_type == "BASELINE_ESTABLISHED" else "relay.baseline_updated"
+                event_data = {
+                    "monitor_id": monitor_id,
+                    "monitor_name": monitor["name"],
+                    "event_type": event_type,
+                    "previous_baseline_sha256": old_baseline,
+                    "trusted_baseline_sha256": new_baseline,
+                    "approved_by": data.approved_by.strip(),
+                    "notes": data.notes.strip() if data.notes else None,
+                    "artifact_url": monitor["artifact_url"],
+                }
+                event_json = json.dumps(event_data, sort_keys=True, separators=(",", ":"))
+                event_hash = hashlib.sha256(f"{prev_hash}|{audit_event_type}|{event_json}|{now_str}".encode()).hexdigest()
+                db.execute(
+                    """
+                    INSERT INTO audit_events
+                        (release_id, event_type, event_json, previous_hash, event_hash, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (release_id, audit_event_type, event_json, prev_hash, event_hash, now_str),
+                )
+
+    return get_monitor(monitor_id)
+
+
+@relay_router.get("/monitors/{monitor_id}/baseline-history", response_model=list[BaselineEventResponse])
+def get_monitor_baseline_history(monitor_id: str) -> list[dict[str, Any]]:
+    """Retrieve immutable baseline audit events for a monitor, newest first."""
+    init_relay_db()
+    with connect() as db:
+        m = db.execute("SELECT id FROM artifact_monitors WHERE id = ?", (monitor_id,)).fetchone()
+        if not m:
+            raise HTTPException(status_code=404, detail=f"Monitor '{monitor_id}' not found.")
+
+        rows = db.execute(
+            """
+            SELECT * FROM relay_baseline_events
+            WHERE monitor_id = ?
+            ORDER BY created_at DESC, rowid DESC
+            """,
+            (monitor_id,),
         ).fetchall()
         return [dict(r) for r in rows]
