@@ -6,5 +6,4 @@ if (-not (Test-Path -LiteralPath ".venv\Scripts\python.exe")) {
 }
 
 & ".venv\Scripts\python.exe" -m pip install -r requirements.lock
-& ".venv\Scripts\python.exe" -m uvicorn backend.main:app --host 127.0.0.1 --port 8000 --reload
-
+& ".venv\Scripts\python.exe" -m uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload

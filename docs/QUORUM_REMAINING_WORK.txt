@@ -1,0 +1,284 @@
+QUORUM — REMAINING WORK
+=======================
+
+CURRENT POSITION
+----------------
+
+Quorum is already a working end-to-end prototype.
+
+Completed major areas:
+
+- Reproducible builds from pinned source commits and build recipes.
+- SHA-256 artifact hashing.
+- Ed25519 signed builder attestations.
+- Configurable quorum decisions.
+- Conflict and compromised-artifact detection.
+- Consumer-side artifact verification.
+- Hash-linked audit history.
+- Signed Evidence Passports and an independent offline verifier.
+- Installation gate for blocking untrusted artifacts.
+- Builder approval, compromise, and reinstatement controls.
+- Living Verification and Trust Degraded assessments.
+- Source Sentinel source-code risk analysis.
+- Quorum Relay distribution monitoring and trusted baselines.
+- Solidity anchoring contract.
+- Foundry 1.8.4, Forge, Cast, and Anvil setup.
+- Contract build, tests, local deployment, and successful Anvil anchoring.
+
+The remaining work is mainly about proving true independence, connecting all
+security decisions together, moving beyond local infrastructure, and preparing
+a reliable public demonstration.
+
+
+PRIORITY 1 — THREE GENUINELY INDEPENDENT BUILDERS
+-------------------------------------------------
+
+Status: REQUIRED — highest-priority remaining requirement.
+
+The present proof uses three isolated workspaces on one physical computer.
+Run the builder agent on three actual devices or genuinely independent hosted
+runners.
+
+Each builder must have:
+
+- A different physical device or independent runner.
+- Its own builder ID.
+- Its own Ed25519 private key.
+- A separately controlled operator identity.
+- Its own clean build environment.
+- The same pinned repository, source commit, and build recipe.
+- Its own signed JSON attestation.
+
+Required proof:
+
+- All three devices independently build the same real open-source package.
+- All three produce the same SHA-256 artifact hash.
+- Quorum verifies all signatures and reaches VERIFIED.
+- One intentionally inconsistent builder produces a disagreement or rejection.
+- Device logs and screenshots are saved for the final demonstration.
+
+
+PRIORITY 2 — REMOVE DEMO KEYS AND SECURE BUILDER IDENTITIES
+----------------------------------------------------------
+
+Status: REQUIRED before presenting the system as secure outside a demo.
+
+The prototype includes deterministic demonstration builder keys. These are
+useful for tests, but must not be treated as real trusted identities.
+
+Remaining work:
+
+- Generate a unique private key directly on each builder device.
+- Never send a private key to the Quorum server.
+- Store private keys using protected files or the operating-system key store.
+- Register only public keys and reviewed key fingerprints with Quorum.
+- Add a documented key rotation and emergency revocation procedure.
+- Clearly label demo identities so they cannot be confused with real builders.
+
+
+PRIORITY 3 — CONNECT LIVING VERIFICATION TO THE INSTALLATION GATE
+----------------------------------------------------------------
+
+Status: IMPORTANT functional integration.
+
+Living Verification can show that an older release is TRUST DEGRADED after a
+builder is compromised. The final consumer decision must also enforce that
+updated status.
+
+Remaining work:
+
+- Include the current Living Verification assessment in the Evidence Passport.
+- Make the installation gate reject a TRUST DEGRADED release.
+- Make consumer verification show both:
+  1. Historical decision: what Quorum knew when the release was approved.
+  2. Current decision: whether the release is still trusted today.
+- Re-evaluate automatically when a builder is compromised or reinstated.
+- Add an end-to-end test proving that a previously accepted artifact becomes
+  blocked after a builder compromise removes the required quorum.
+
+
+PRIORITY 4 — CONNECT SOURCE SENTINEL TO QUORUM POLICY
+----------------------------------------------------
+
+Status: Source analysis works; automatic policy escalation remains.
+
+Source Sentinel currently detects risky source changes. The risk result should
+directly affect the release-verification decision.
+
+Remaining work:
+
+- Bind each Sentinel comparison to the exact release ID and source commit.
+- Automatically require stricter quorum for HIGH or CRITICAL risk changes.
+- Require manual approval for CRITICAL findings.
+- Prevent final release approval while required Sentinel review is pending.
+- Include the Sentinel result, source snapshot hashes, and reviewer decision in
+  the Evidence Passport and audit report.
+- Demonstrate a normal source change and an intentionally poisoned source change.
+
+
+PRIORITY 5 — COMPLETE INDEPENDENT QUORUM RELAY WITNESSES
+-------------------------------------------------------
+
+Status: Monitoring and baseline checks work locally; genuine witness
+independence remains.
+
+Remaining work:
+
+- Run Relay witnesses from at least two independent devices or networks.
+- Have each witness sign its download observation.
+- Monitor a real HTTPS release URL or GitHub Release asset.
+- Compare every observed artifact with the verified consensus hash and trusted
+  baseline.
+- Aggregate multiple witness observations instead of trusting one server.
+- Add a clear fail-closed consumer warning when the distributed artifact changes.
+- Demonstrate the valid artifact and a deliberately substituted artifact.
+
+
+PRIORITY 6 — PUBLIC BLOCKCHAIN ANCHORING
+---------------------------------------
+
+Status: Local Anvil anchoring is complete.
+
+Foundry 1.8.4 is installed and working:
+
+- forge builds and tests the Solidity contract.
+- anvil runs the local Ethereum blockchain.
+- cast interacts with the contract.
+- The contract has been deployed and used successfully on Anvil chain 31337.
+
+Remaining optional-but-valuable step:
+
+- Create a free Sepolia testnet wallet.
+- Obtain free Sepolia test ETH from a faucet.
+- Deploy the existing contract to Sepolia.
+- Configure Quorum with the Sepolia RPC URL, chain ID, contract address, and a
+  protected deployment/submitter key.
+- Anchor one verified release on Sepolia.
+- Confirm the transaction using an independent block explorer.
+- Save the transaction URL as public evidence for judges.
+
+Never commit wallet private keys, RPC secrets, or seed phrases to GitHub.
+
+
+PRIORITY 7 — API AUTHENTICATION AND ROLE PERMISSIONS
+---------------------------------------------------
+
+Status: Needed before hosting the backend publicly.
+
+Sensitive actions must not be available to every visitor.
+
+Protect at least these actions:
+
+- Builder registration and approval.
+- Builder compromise and reinstatement.
+- Source Sentinel manual review.
+- Relay trusted-baseline creation or replacement.
+- Blockchain anchoring.
+- Release and policy administration.
+
+Use simple roles such as ADMIN, BUILDER, REVIEWER, WITNESS, and CONSUMER.
+Read-only verification endpoints can remain public.
+
+
+PRIORITY 8 — DEPLOYMENT AND PERSISTENT STORAGE
+----------------------------------------------
+
+Status: Local FastAPI and SQLite work; hosted production setup remains.
+
+Remaining work:
+
+- Package the backend and frontend for repeatable deployment.
+- Keep strict verification mode enabled; never silently use mock decisions.
+- Use persistent storage and automatic database backups.
+- Add database migration/version handling.
+- Configure HTTPS, CORS, environment variables, and secret management.
+- Add rate limiting and artifact/download size limits where required.
+- Add health checks and structured error logging.
+- Document one-command local startup and hosted deployment.
+
+SQLite is acceptable for the hackathon prototype. A managed PostgreSQL database
+can be considered later if multiple servers need concurrent writes.
+
+
+PRIORITY 9 — MORE REAL PACKAGE AND ATTACK TESTS
+-----------------------------------------------
+
+Status: The current real-package proof works; broader evidence is needed.
+
+Remaining work:
+
+- Test at least two or three different open-source packages.
+- Record reproducibility results for each supported platform.
+- Test non-deterministic timestamps, paths, build IDs, and dependency downloads.
+- Demonstrate valid, tampered, conflicting, invalid-signature, compromised-key,
+  poisoned-source, and swapped-download cases.
+- Keep every demonstration repeatable through scripts instead of manual database
+  editing.
+
+
+PRIORITY 10 — FINAL END-TO-END DEMONSTRATION
+--------------------------------------------
+
+Prepare one short, repeatable story:
+
+1. Register a real release from an exact source commit.
+2. Show Source Sentinel checking whether the recipe/source is suspicious.
+3. Build it independently on three devices.
+4. Submit and verify three signed attestations.
+5. Show the VERIFIED quorum decision.
+6. Verify the downloaded artifact with consumer-side hashing.
+7. Pass the installation gate.
+8. Show the signed audit report and blockchain anchor.
+9. Use Quorum Relay to confirm that the download URL still serves the same file.
+10. Mark one builder compromised.
+11. Show Living Verification recalculating the old release.
+12. If quorum is no longer sufficient, show TRUST DEGRADED and installation
+    blocked.
+
+Also prepare a deliberately malicious flow in which Quorum clearly refuses the
+release rather than silently falling back to mock data.
+
+
+FINAL DOCUMENTATION AND PRESENTATION CHECKLIST
+----------------------------------------------
+
+- Update README with architecture and exact run commands.
+- Add setup instructions for the server and all three builder devices.
+- Document every API endpoint used by the frontend.
+- Add a threat model: what Quorum protects against and what it does not.
+- Clearly distinguish prototype, local-demo, and production behavior.
+- Record a backup demonstration video.
+- Prepare screenshots of the three independent devices and their matching hashes.
+- Prepare a Sepolia explorer link if public anchoring is completed.
+- Display real evidence instead of mock values during the final presentation.
+
+
+RECOMMENDED EXECUTION ORDER
+---------------------------
+
+1. Three real builder devices.
+2. Real per-device keys and identity registration.
+3. Living Verification installation-gate integration.
+4. Source Sentinel policy enforcement.
+5. Independent Relay witnesses.
+6. Full attack/valid demonstration scripts.
+7. Optional Sepolia anchoring.
+8. Authentication and hosted deployment.
+9. Documentation, screenshots, and final presentation rehearsal.
+
+
+DEFINITION OF DONE
+------------------
+
+Quorum is ready for a strong final demonstration when:
+
+- Three genuinely independent builders reproduce the same release.
+- All evidence is signed and independently verifiable.
+- Conflicting or compromised evidence blocks installation.
+- Source risk can increase the required verification policy.
+- Distribution substitution is detected by independent Relay witnesses.
+- Later builder compromise changes the current trust decision.
+- Historical evidence remains tamper-evident and auditable.
+- At least one valid case and multiple attack cases run reliably end to end.
+- The complete demonstration uses real backend data with mock fallback disabled.
+
