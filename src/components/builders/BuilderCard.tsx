@@ -10,6 +10,7 @@ import {
   Cpu,
   Clock,
   ShieldCheck,
+  ShieldAlert,
   CheckCircle2,
 } from 'lucide-react';
 
@@ -92,9 +93,9 @@ export const BuilderCard: React.FC<BuilderCardProps> = ({ builder, index }) => {
             <span className="text-white">{formatRelativeTime(builder.latestAttestationTime)}</span>
           </div>
 
-          <div className="flex items-center gap-1 text-quorum-green">
-            <CheckCircle2 className="w-3 h-3" />
-            <span>Signature: VALID</span>
+          <div className={`flex items-center gap-1 ${builder.trusted ? 'text-quorum-green' : 'text-quorum-amber'}`}>
+            {builder.trusted ? <CheckCircle2 className="w-3 h-3" /> : <ShieldAlert className="w-3 h-3" />}
+            <span>{builder.trusted ? 'Trust: APPROVED' : 'Trust: PENDING'}</span>
           </div>
         </div>
       </div>

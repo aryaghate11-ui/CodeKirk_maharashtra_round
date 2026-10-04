@@ -1,0 +1,15 @@
+{
+  "schema_version": "quorum.build-target.v1",
+  "source": {
+    "repository_url": "https://github.com/zyedidia/micro",
+    "commit": "04c577049ca898f097cd6a2dae69af0b4d4493e1"
+  },
+  "build": {
+    "toolchain": "go1.27.1",
+    "goos": "linux",
+    "goarch": "amd64",
+    "cgo_enabled": "0",
+    "artifact_name": "micro-linux-amd64",
+    "command": ["go", "build", "-trimpath", "-buildvcs=false", "-ldflags=-buildid=", "-o", "{artifact}", "./cmd/micro"]
+  }
+}

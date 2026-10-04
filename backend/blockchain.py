@@ -9,6 +9,8 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
+from eth_account import Account
+
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG_PATH = ROOT / ".quorum" / "blockchain.json"
@@ -28,23 +30,48 @@ class BlockchainConfig:
     anchor_selector: str
     get_anchor_selector: str
     deployment_transaction: str | None = None
+    private_key: str | None = None
+    receipt_timeout_seconds: int = 120
 
 
-def load_config(path: Path | None = None) -> BlockchainConfig | None:
+PUBLIC_CHAIN_IDS = {
+    1, 10, 137, 8453, 42161,
+    11155111, 11155420, 80002, 84532, 421614,
+}
+
+
+def is_public_chain(chain_id: int) -> bool:
+    """Return true only for public networks explicitly recognized by Quorum."""
+    return chain_id in PUBLIC_CHAIN_IDS
+
+
+def network_name(chain_id: int) -> str:
+    names = {
+        1: "Ethereum Mainnet", 10: "Optimism", 137: "Polygon",
+        8453: "Base", 42161: "Arbitrum One", 11155111: "Sepolia",
+        11155420: "Optimism Sepolia", 80002: "Polygon Amoy",
+        84532: "Base Sepolia", 421614: "Arbitrum Sepolia",
+        31337: "Anvil", 1337: "Local EVM",
+    }
+    return names.get(chain_id, f"EVM chain {chain_id}")
+
+
+def load_config(path: Path | None = None, *, allow_env: bool = True) -> BlockchainConfig | None:
     config_path = path or Path(os.getenv("QUORUM_BLOCKCHAIN_CONFIG", DEFAULT_CONFIG_PATH))
     file_config: dict = {}
     if config_path.is_file():
         file_config = json.loads(config_path.read_text(encoding="utf-8"))
 
-    rpc_url = os.getenv("QUORUM_RPC_URL") or file_config.get("rpc_url")
-    contract_address = os.getenv("QUORUM_CONTRACT_ADDRESS") or file_config.get(
+    env = os.environ if allow_env else {}
+    rpc_url = env.get("QUORUM_RPC_URL") or file_config.get("rpc_url")
+    contract_address = env.get("QUORUM_CONTRACT_ADDRESS") or file_config.get(
         "contract_address"
     )
-    chain_id_value = os.getenv("QUORUM_CHAIN_ID") or file_config.get("chain_id")
-    anchor_selector = os.getenv("QUORUM_ANCHOR_SELECTOR") or file_config.get(
+    chain_id_value = env.get("QUORUM_CHAIN_ID") or file_config.get("chain_id")
+    anchor_selector = env.get("QUORUM_ANCHOR_SELECTOR") or file_config.get(
         "anchor_selector"
     )
-    get_anchor_selector = os.getenv("QUORUM_GET_ANCHOR_SELECTOR") or file_config.get(
+    get_anchor_selector = env.get("QUORUM_GET_ANCHOR_SELECTOR") or file_config.get(
         "get_anchor_selector"
     )
     if not all((rpc_url, contract_address, chain_id_value, anchor_selector, get_anchor_selector)):
@@ -53,10 +80,12 @@ def load_config(path: Path | None = None) -> BlockchainConfig | None:
         rpc_url=str(rpc_url),
         chain_id=int(chain_id_value),
         contract_address=str(contract_address),
-        from_address=os.getenv("QUORUM_FROM_ADDRESS") or file_config.get("from_address"),
+        from_address=env.get("QUORUM_FROM_ADDRESS") or file_config.get("from_address"),
         anchor_selector=str(anchor_selector).removeprefix("0x"),
         get_anchor_selector=str(get_anchor_selector).removeprefix("0x"),
         deployment_transaction=file_config.get("deployment_transaction"),
+        private_key=env.get("QUORUM_EVM_PRIVATE_KEY"),
+        receipt_timeout_seconds=int(env.get("QUORUM_RECEIPT_TIMEOUT_SECONDS") or file_config.get("receipt_timeout_seconds", 120)),
     )
 
 
@@ -105,6 +134,63 @@ def _validate_hash(value: str, name: str) -> str:
     return normalized
 
 
+def broadcast_transaction(
+    config: BlockchainConfig,
+    *,
+    data: str,
+    gas: int,
+    to: str | None = None,
+) -> tuple[str, str]:
+    """Broadcast through an unlocked local account or sign locally for a public RPC."""
+    if config.private_key:
+        try:
+            account = Account.from_key(config.private_key)
+        except Exception as error:
+            raise BlockchainError("QUORUM_EVM_PRIVATE_KEY is not a valid Ethereum private key") from error
+        sender = account.address
+        if config.from_address and config.from_address.lower() != sender.lower():
+            raise BlockchainError("Configured from_address does not match QUORUM_EVM_PRIVATE_KEY")
+        nonce = int(rpc_call(config.rpc_url, "eth_getTransactionCount", [sender, "pending"]), 16)
+        latest = rpc_call(config.rpc_url, "eth_getBlockByNumber", ["latest", False])
+        transaction = {
+            "chainId": config.chain_id,
+            "nonce": nonce,
+            "data": data,
+            "gas": gas,
+            "value": 0,
+        }
+        if to:
+            transaction["to"] = to
+        base_fee = int(latest.get("baseFeePerGas", "0x0"), 16) if isinstance(latest, dict) else 0
+        if base_fee:
+            try:
+                priority_fee = int(rpc_call(config.rpc_url, "eth_maxPriorityFeePerGas", []), 16)
+            except BlockchainError:
+                priority_fee = 1_500_000_000
+            transaction.update({
+                "type": 2,
+                "maxPriorityFeePerGas": priority_fee,
+                "maxFeePerGas": base_fee * 2 + priority_fee,
+            })
+        else:
+            transaction["gasPrice"] = int(rpc_call(config.rpc_url, "eth_gasPrice", []), 16)
+        signed = Account.sign_transaction(transaction, config.private_key)
+        raw = getattr(signed, "raw_transaction", None) or getattr(signed, "rawTransaction")
+        transaction_hash = rpc_call(config.rpc_url, "eth_sendRawTransaction", ["0x" + bytes(raw).hex()])
+        return str(transaction_hash), sender
+
+    accounts = rpc_call(config.rpc_url, "eth_accounts", [])
+    sender = config.from_address or (accounts[0] if accounts else None)
+    if not sender:
+        raise BlockchainError(
+            "No unlocked RPC account is available; set QUORUM_EVM_PRIVATE_KEY for local signing"
+        )
+    transaction = {"from": sender, "data": data, "gas": hex(gas)}
+    if to:
+        transaction["to"] = to
+    return str(rpc_call(config.rpc_url, "eth_sendTransaction", [transaction])), sender
+
+
 def anchor_evidence(
     config: BlockchainConfig,
     *,
@@ -120,11 +206,6 @@ def anchor_evidence(
         raise BlockchainError(
             f"Configured chain {config.chain_id} does not match RPC chain {observed_chain_id}"
         )
-    accounts = rpc_call(config.rpc_url, "eth_accounts", [])
-    sender = config.from_address or (accounts[0] if accounts else None)
-    if not sender:
-        raise BlockchainError("No unlocked Anvil account is available")
-
     release_hash = release_id_hash(release_id)
     evidence_hash = _validate_hash(evidence_sha256, "evidence_sha256")
     data = "0x" + "".join(
@@ -136,19 +217,12 @@ def anchor_evidence(
             _word(int(conflict)),
         )
     )
-    transaction_hash = rpc_call(
-        config.rpc_url,
-        "eth_sendTransaction",
-        [
-            {
-                "from": sender,
-                "to": config.contract_address,
-                "data": data,
-                "gas": hex(500_000),
-            }
-        ],
+    transaction_hash, sender = broadcast_transaction(
+        config, to=config.contract_address, data=data, gas=500_000,
     )
-    receipt = wait_for_receipt(config.rpc_url, transaction_hash)
+    receipt = wait_for_receipt(
+        config.rpc_url, transaction_hash, timeout_seconds=config.receipt_timeout_seconds
+    )
     return {
         "chain_id": config.chain_id,
         "contract_address": config.contract_address,
@@ -205,9 +279,11 @@ def status(config: BlockchainConfig | None = None) -> dict:
     return {
         "configured": True,
         "connected": connected,
-        "network": f"Anvil {selected.chain_id}",
+        "network": network_name(selected.chain_id),
+        "public_network": is_public_chain(selected.chain_id),
         "chain_id": selected.chain_id,
         "observed_chain_id": observed_chain_id,
         "contract_address": selected.contract_address,
         "deployment_transaction": selected.deployment_transaction,
+        "signing_mode": "local-private-key" if selected.private_key else "unlocked-rpc-account",
     }

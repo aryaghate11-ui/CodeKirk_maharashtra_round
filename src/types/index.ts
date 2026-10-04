@@ -1,6 +1,6 @@
 export type VerificationDecision = 'ACCEPTED' | 'REJECTED' | 'CONFLICT' | 'PENDING';
 
-export type BuilderStatus = 'ONLINE' | 'DEGRADED' | 'OFFLINE';
+export type BuilderStatus = 'ONLINE' | 'DEGRADED' | 'OFFLINE' | 'PENDING_APPROVAL';
 export type AttestationStatus = 'MATCH' | 'CONFLICT' | 'INVALID_SIG' | 'PENDING';
 
 export interface QuorumPolicy {
@@ -41,6 +41,7 @@ export interface Builder {
   runtime: string;
   region: string;
   status: BuilderStatus;
+  trusted: boolean;
   uptime: number; // percentage
   latestAttestationTime: string;
   lastArtifactHash: string;

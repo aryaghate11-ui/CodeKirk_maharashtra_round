@@ -2,6 +2,14 @@ name: Quorum reproducible builder
 
 on:
   workflow_dispatch:
+    inputs:
+      recipe:
+        description: Pinned recipe path
+        required: true
+        default: configs/recipes/hey.json
+      release_id:
+        description: Existing Quorum release ID for a fresh challenge (recommended)
+        required: false
 
 permissions:
   contents: read
@@ -19,7 +27,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install signing dependency
-        run: python -m pip install --require-hashes -r backend/requirements.lock
+        run: python -m pip install -r requirements.lock
       - name: Load persistent witness key
         env:
           QUORUM_BUILDER_PRIVATE_KEY_B64: ${{ secrets.QUORUM_BUILDER_PRIVATE_KEY_B64 }}
@@ -29,11 +37,19 @@ jobs:
           printf '%s' "$QUORUM_BUILDER_PRIVATE_KEY_B64" | base64 --decode > .quorum/keys/github-actions.pem
           chmod 600 .quorum/keys/github-actions.pem
       - name: Rebuild pinned source, hash and sign
-        run: >-
-          python -m builder.agent run
-          --config configs/builders/github-actions.json
-          --key .quorum/keys/github-actions.pem
-          --output builder-results/github-actions.json
+        env:
+          QUORUM_RECIPE: ${{ inputs.recipe }}
+          QUORUM_RELEASE_ID: ${{ inputs.release_id }}
+        run: |
+          args=(python -m builder.agent run
+            --config configs/builders/github-actions.json
+            --recipe "$QUORUM_RECIPE"
+            --key .quorum/keys/github-actions.pem
+            --output builder-results/github-actions.json)
+          if [ -n "$QUORUM_RELEASE_ID" ]; then
+            args+=(--release-id "$QUORUM_RELEASE_ID")
+          fi
+          "${args[@]}"
       - uses: actions/upload-artifact@v7
         with:
           name: quorum-github-actions-attestation

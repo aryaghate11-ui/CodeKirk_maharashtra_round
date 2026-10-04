@@ -54,6 +54,33 @@ def verify_passport(report: dict, trusted_report_key: str | None = None) -> dict
                 raise ValueError('Modified, missing, or reordered audit event')
             previous = digest
         checks['audit_hash_chain'] = bool(evidence['audit_events']) and previous == evidence['audit_chain_head']
+        if 'builder_trust_events' in evidence:
+            trust_previous = '0' * 64
+            latest_trust = {}
+            for event in evidence['builder_trust_events']:
+                payload = canonical({key: event[key] for key in (
+                    'builder_id', 'action', 'fingerprint', 'reason')}).decode()
+                digest = hashlib.sha256(
+                    f"{trust_previous}|{payload}|{event['created_at']}".encode()
+                ).hexdigest()
+                if event['previous_hash'] != trust_previous or event['event_hash'] != digest:
+                    raise ValueError('Modified, missing, or reordered builder trust event')
+                trust_previous = digest
+                latest_trust[event['builder_id']] = event
+            stated_trust = evidence.get('builder_trust_chain', {})
+            checks['builder_trust_chain'] = (
+                stated_trust.get('valid') is True
+                and stated_trust.get('event_count') == len(evidence['builder_trust_events'])
+                and stated_trust.get('chain_head') == (trust_previous if evidence['builder_trust_events'] else None)
+            )
+            for builder in evidence['builders']:
+                approval = latest_trust.get(builder['id'])
+                fingerprint = hashlib.sha256(base64.b64decode(builder['public_key'], validate=True)).hexdigest()
+                if not approval or approval['action'] not in {
+                    'approved', 'demo-seed-approved', 'legacy-import-approved'
+                } or approval['fingerprint'] != fingerprint:
+                    raise ValueError(f"Builder {builder['id']} has no valid trust approval")
+            checks['builder_trust_approvals'] = True
         for builder in evidence['builders']:
             payload = builder['signed_payload']
             schema = payload.get('schema_version')

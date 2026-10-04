@@ -1,4 +1,5 @@
 fastapi>=0.115,<1
 uvicorn[standard]>=0.30,<1
 cryptography>=43,<47
+eth-account>=0.14,<1
 

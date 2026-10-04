@@ -143,6 +143,12 @@ class QuorumDecisionTests(unittest.TestCase):
                     public_key=main.encode_public_key(private_key.public_key()),
                 )
             )
+            main.set_builder_trust(
+                builder_id, trusted=True,
+                expected_fingerprint=main.hashlib.sha256(main.base64.b64decode(
+                    main.encode_public_key(private_key.public_key()))).hexdigest(),
+                reason="Test fixture approval",
+            )
 
         created = main.create_release(
             main.ReleaseCreate(
@@ -220,6 +226,51 @@ class QuorumDecisionTests(unittest.TestCase):
         )
         self.assertNotIn("release_id", payload)
         self.assertNotIn("built_at", payload)
+
+    def test_real_package_recipe_catalog_is_pinned_and_distinct(self):
+        root = Path(__file__).resolve().parents[1]
+        identity = agent.load_config(root / "configs" / "builders" / "github-actions.json")
+        configs = [
+            agent.apply_recipe(identity, agent.load_recipe(path))
+            for path in sorted((root / "configs" / "recipes").glob("*.json"))
+        ]
+        self.assertGreaterEqual(len(configs), 3)
+        self.assertEqual(len({config["source"]["repository_url"] for config in configs}), len(configs))
+        self.assertEqual(len({agent.recipe_sha256(config) for config in configs}), len(configs))
+        for config in configs:
+            self.assertEqual(len(config["source"]["commit"]), 40)
+            self.assertIn("-trimpath", config["build"]["command"])
+
+    def test_builder_can_sign_a_release_specific_challenge(self):
+        config = agent.load_config(
+            Path(__file__).resolve().parents[1] / "configs" / "builders" / "laptop-one.json"
+        )
+        private_key = main.Ed25519PrivateKey.generate()
+        main.register_builder(main.BuilderRegistrationRequest(
+            id=config["builder"]["id"], name=config["builder"]["name"],
+            operator=config["builder"]["operator"], platform="independent machine",
+            public_key=main.encode_public_key(private_key.public_key())))
+        main.set_builder_trust(
+            config["builder"]["id"], trusted=True,
+            expected_fingerprint=main.hashlib.sha256(main.base64.b64decode(
+                main.encode_public_key(private_key.public_key()))).hexdigest(),
+            reason="Test fixture approval",
+        )
+        created = main.create_release(main.ReleaseCreate(
+            repository_url=config["source"]["repository_url"],
+            source_commit=config["source"]["commit"],
+            artifact_name=config["build"]["artifact_name"],
+            recipe_sha256=agent.recipe_sha256(config),
+            candidate_sha256=main.GOOD_ARTIFACT_SHA256))
+        built_at = main.utc_now()
+        payload = agent.signed_payload(config, main.GOOD_ARTIFACT_SHA256,
+            "independent machine", release_id=created["id"], built_at=built_at)
+        signature = base64.b64encode(private_key.sign(agent.canonical_json(payload).encode())).decode()
+        result = main.submit_attestation(created["id"], main.AttestationCreate(
+            schema_version="quorum.attestation.v1", builder_id=config["builder"]["id"],
+            artifact_sha256=main.GOOD_ARTIFACT_SHA256, environment="independent machine",
+            built_at=built_at, signature=signature))
+        self.assertEqual(result["builders"][0]["signed_payload"]["release_id"], created["id"])
 
     def test_audit_report_verifies_offline(self):
         verification = main.run_demo_verification(

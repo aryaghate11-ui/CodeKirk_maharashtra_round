@@ -28,8 +28,14 @@ The SQLite database is created at `backend/data/quorum.db` and is intentionally 
 - Static fallback mode for the hosted dashboard
 - Real pinned-commit Go builder agent with isolated workspaces
 - Three separately keyed builder profiles and GitHub Actions witness workflow
+- Release-specific builder challenges that prevent cross-release attestation replay
+- Fingerprint-approved builder trust with hash-chained approval/revocation history
+- Pinned reproducibility recipes for `hey`, `fzf`, and `micro`
 - Solidity evidence-anchor contract with local Anvil deployment
+- Locally signed EIP-1559 transactions for Sepolia/public-chain anchoring
 - Downloadable audit passport with offline signature, policy and hash-chain verification
+- Fail-closed installation gate that runs an installer only after signed quorum verification
+- Whole-database integrity scan with separate local/private and public-anchor status
 
 The demo builder keys are deterministic and exist only to demonstrate the end-to-end signature flow. Real builders must use separately generated private keys stored outside the repository.
 
@@ -38,16 +44,23 @@ The demo builder keys are deterministic and exist only to demonstrate the end-to
 Install the pinned Go `1.27.1` toolchain, start Quorum with `start.ps1`, then open a second PowerShell window:
 
 ```powershell
-.venv\Scripts\python.exe scripts\run_three_builders.py
+.venv\Scripts\python.exe scripts\run_three_builders.py --approve-local-builders
 ```
 
 To prove disagreement handling with real signed evidence:
 
 ```powershell
-.venv\Scripts\python.exe scripts\run_three_builders.py --tamper-builder laptop-two
+.venv\Scripts\python.exe scripts\run_three_builders.py --approve-local-builders --tamper-builder laptop-two
 ```
 
 This local command uses three fresh workspaces and three separate signing keys on one host. It proves the protocol, reproducibility, signature checks, quorum decision, and conflict detection. To claim real operational decentralization, run the three profiles on GitHub Actions and two independently controlled laptops as described in `docs/BUILDER_AGENT.md`.
+
+To run two fresh builds of every package recipe and compare their SHA-256 values:
+
+```powershell
+$env:QUORUM_GO_BINARY = ".quorum\toolchains\go\bin\go.exe"
+.venv\Scripts\python.exe scripts\test_package_matrix.py
+```
 
 ## Blockchain and audit passport
 
@@ -74,10 +87,15 @@ Setup, deployment and offline verification commands are documented in
 - `GET /api/v1/releases`
 - `GET /api/v1/releases/{release_id}`
 - `POST /api/v1/releases/{release_id}/consumer-verifications`
+- `GET /api/v1/releases/{release_id}/integrity`
+- `GET /api/v1/integrity`
 - Interactive API documentation: `/docs`
 
 The older unversioned `/api/*` routes remain available for compatibility. The
 v1 request and response contract is documented in `docs/API_CONTRACT_V1.md`.
+
+The automatic installation gate and independent public-anchor checks are
+documented in `docs/RELEASE_GATE.md`.
 
 ## Test
 

@@ -35,6 +35,14 @@ import {
   UpdateMonitorInput,
 } from '../types/relay';
 import {
+  CreateLivingIncident,
+  LivingAssessment,
+  LivingBuilder,
+  LivingIncident,
+  LivingIncidentResult,
+  LivingStats,
+} from '../types/living';
+import {
   MOCK_BUILDERS,
   MOCK_RELEASES,
   MOCK_SYSTEM_STATS,
@@ -105,6 +113,7 @@ const mapVerificationResponse = (
     runtime: builder.attestation_schema,
     region: `Builder ${index + 1}`,
     status: 'ONLINE',
+    trusted: true,
     uptime: 100,
     latestAttestationTime: builder.built_at,
     lastArtifactHash: builder.artifact_sha256,
@@ -469,7 +478,8 @@ class QuorumApiService {
             os: builder.platform,
             runtime: 'quorum.attestation.v2',
             region: builder.operator,
-            status: 'ONLINE',
+            status: builder.trusted ? 'ONLINE' : 'PENDING_APPROVAL',
+            trusted: builder.trusted,
             uptime: 100,
             latestAttestationTime: builder.latest_attestation_at || builder.created_at,
             lastArtifactHash: builder.latest_artifact_sha256 || '0'.repeat(64),
@@ -537,6 +547,34 @@ class QuorumApiService {
     return mapVerificationResponse(data, data.threshold === 3 ? '3-of-3' : '2-of-3');
   }
 
+  public async evaluateRelease(
+    releaseId: string,
+    policyType: '2-of-3' | '3-of-3'
+  ): Promise<VerificationResult> {
+    const endpoint = `/releases/${encodeURIComponent(releaseId)}/evaluate`;
+    const threshold = policyType === '3-of-3' ? 3 : 2;
+    const res = await fetch(`${API_BASE}${endpoint}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        mode: policyType === '3-of-3' ? 'all' : 'k-of-n',
+        threshold,
+        expected_builders: 3,
+        minimum_operators: threshold,
+        reject_on_conflict: true,
+      }),
+    });
+    if (!res.ok) throw new BackendError(`Status ${res.status}`, res.status, endpoint);
+    const evaluation = await res.json() as Pick<ApiVerificationResponse,
+      'status' | 'consensus_sha256' | 'candidate_sha256' | 'attestation_count' | 'rules'>;
+    const currentResponse = await fetch(`${API_BASE}/releases/${encodeURIComponent(releaseId)}`);
+    if (!currentResponse.ok) {
+      throw new BackendError(`Status ${currentResponse.status}`, currentResponse.status, endpoint);
+    }
+    const current = await currentResponse.json() as ApiVerificationResponse;
+    return mapVerificationResponse({ ...current, ...evaluation, threshold }, policyType);
+  }
+
   public async getAudit(releaseId: string): Promise<AuditReport> {
     const endpoint = `/releases/${encodeURIComponent(releaseId)}/audit-report`;
     const res = await fetch(`${API_BASE}${endpoint}`);
@@ -576,7 +614,7 @@ class QuorumApiService {
   public async runDemoScenario(
     scenarioId: ScenarioId,
     policyType: '2-of-3' | '3-of-3' = '2-of-3',
-    releaseId: string = 'rel-hey-01'
+    releaseId: string = ''
   ): Promise<VerificationResult> {
     const backendReady = this.backendAvailable || await this.detectBackend();
     const backendScenario = scenarioId === 'valid' || scenarioId === 'conflict' || scenarioId === 'tampered';
@@ -768,6 +806,49 @@ class QuorumApiService {
   public async getRelayMonitorHistory(id: string, limit = 50): Promise<RelayCheck[]> {
     const res = await fetch(`${API_BASE}/relay/monitors/${encodeURIComponent(id)}/history?limit=${limit}`);
     if (!res.ok) throw new BackendError(`Status ${res.status}: Failed to fetch monitor check history`, res.status, `/relay/monitors/${id}/history`);
+    return await res.json();
+  }
+
+  public async getLivingStats(): Promise<LivingStats> {
+    const res = await fetch(`${API_BASE}/living/stats`);
+    if (!res.ok) throw new BackendError(`Status ${res.status}: Failed to load Living Verification`, res.status, '/living/stats');
+    return await res.json();
+  }
+
+  public async getLivingBuilders(): Promise<LivingBuilder[]> {
+    const res = await fetch(`${API_BASE}/living/builders`);
+    if (!res.ok) throw new BackendError(`Status ${res.status}: Failed to load builder trust`, res.status, '/living/builders');
+    return await res.json();
+  }
+
+  public async getLivingIncidents(): Promise<LivingIncident[]> {
+    const res = await fetch(`${API_BASE}/living/incidents`);
+    if (!res.ok) throw new BackendError(`Status ${res.status}: Failed to load incidents`, res.status, '/living/incidents');
+    return await res.json();
+  }
+
+  public async getLivingReleases(): Promise<LivingAssessment[]> {
+    const res = await fetch(`${API_BASE}/living/releases`);
+    if (!res.ok) throw new BackendError(`Status ${res.status}: Failed to load release assessments`, res.status, '/living/releases');
+    return await res.json();
+  }
+
+  public async createLivingIncident(input: CreateLivingIncident): Promise<LivingIncidentResult> {
+    const res = await fetch(`${API_BASE}/living/incidents`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new BackendError(body.detail || `Status ${res.status}: Incident rejected`, res.status, '/living/incidents');
+    }
+    return await res.json();
+  }
+
+  public async reevaluateLivingReleases(): Promise<{ reevaluated: number; trust_degraded: number; assessments: LivingAssessment[] }> {
+    const res = await fetch(`${API_BASE}/living/re-evaluate`, { method: 'POST' });
+    if (!res.ok) throw new BackendError(`Status ${res.status}: Re-evaluation failed`, res.status, '/living/re-evaluate');
     return await res.json();
   }
 }

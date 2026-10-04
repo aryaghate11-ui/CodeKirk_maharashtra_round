@@ -7,7 +7,7 @@ import { QuorumSummaryCard } from '../components/verification/QuorumSummaryCard'
 import { WhyDecisionCard } from '../components/verification/WhyDecisionCard';
 import { VerificationProgressModal } from '../components/verification/VerificationProgressModal';
 import { ApiErrorBanner } from '../components/common/ApiErrorBanner';
-import { VerificationResult, ScenarioId, Release } from '../types';
+import { VerificationResult, Release } from '../types';
 import { api } from '../services/api';
 import { truncateHash } from '../lib/utils';
 import {
@@ -30,9 +30,8 @@ interface ReleaseVerificationPageProps {
 }
 
 export const ReleaseVerificationPage: React.FC<ReleaseVerificationPageProps> = ({
-  selectedReleaseId = 'rel-hey-01',
+  selectedReleaseId = '',
 }) => {
-  const [currentScenario, setCurrentScenario] = useState<ScenarioId>('conflict');
   const [activePolicyType, setActivePolicyType] = useState<'2-of-3' | '3-of-3'>('2-of-3');
   const [verification, setVerification] = useState<VerificationResult | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -48,15 +47,11 @@ export const ReleaseVerificationPage: React.FC<ReleaseVerificationPageProps> = (
     }
   }, [selectedReleaseId]);
 
-  const loadVerification = async (
-    scenario: ScenarioId,
-    policy: '2-of-3' | '3-of-3',
-    relId: string = selectedRelId
-  ) => {
+  const loadVerification = async (relId: string = selectedRelId) => {
     setIsLoading(true);
     setApiError(null);
     try {
-      const data = await api.runDemoScenario(scenario, policy, relId);
+      const data = await api.getVerification(relId);
       setVerification(data);
     } catch (err: any) {
       console.error('Failed to run verification', err);
@@ -70,7 +65,7 @@ export const ReleaseVerificationPage: React.FC<ReleaseVerificationPageProps> = (
     api.getReleases()
       .then((releases) => {
         setAllReleases(releases);
-        if (releases.length > 0 && (!selectedRelId || selectedRelId === 'rel-hey-01')) {
+        if (releases.length > 0 && !selectedRelId) {
           setSelectedRelId(releases[0].id);
         }
       })
@@ -78,8 +73,8 @@ export const ReleaseVerificationPage: React.FC<ReleaseVerificationPageProps> = (
   }, []);
 
   useEffect(() => {
-    loadVerification(currentScenario, activePolicyType, selectedRelId);
-  }, [currentScenario, activePolicyType, selectedRelId]);
+    if (selectedRelId) loadVerification(selectedRelId);
+  }, [selectedRelId]);
 
   const handleRunVerification = () => {
     setIsVerifyingModalOpen(true);
@@ -87,7 +82,12 @@ export const ReleaseVerificationPage: React.FC<ReleaseVerificationPageProps> = (
 
   const handleModalFinished = () => {
     setIsVerifyingModalOpen(false);
-    loadVerification(currentScenario, activePolicyType, selectedRelId);
+    setIsLoading(true);
+    setApiError(null);
+    api.evaluateRelease(selectedRelId, activePolicyType)
+      .then(setVerification)
+      .catch(setApiError)
+      .finally(() => setIsLoading(false));
   };
 
   if (!verification) {
@@ -96,8 +96,8 @@ export const ReleaseVerificationPage: React.FC<ReleaseVerificationPageProps> = (
         {apiError && (
           <ApiErrorBanner
             error={apiError}
-            endpoint="/demo or /verify"
-            onRetry={() => loadVerification(currentScenario, activePolicyType, selectedRelId)}
+            endpoint="/releases/{id}"
+            onRetry={() => loadVerification(selectedRelId)}
           />
         )}
         <div className="flex items-center justify-center min-h-[350px]">
@@ -123,8 +123,8 @@ export const ReleaseVerificationPage: React.FC<ReleaseVerificationPageProps> = (
       {apiError && (
         <ApiErrorBanner
           error={apiError}
-          endpoint="/demo or /verify"
-          onRetry={() => loadVerification(currentScenario, activePolicyType, selectedRelId)}
+          endpoint="/releases/{id}"
+          onRetry={() => loadVerification(selectedRelId)}
         />
       )}
 
@@ -158,16 +158,7 @@ export const ReleaseVerificationPage: React.FC<ReleaseVerificationPageProps> = (
                   </label>
                   <select
                     value={selectedRelId}
-                    onChange={(e) => {
-                      const newId = e.target.value;
-                      setSelectedRelId(newId);
-                      setIsLoading(true);
-                      setApiError(null);
-                      api.getVerification(newId)
-                        .then(setVerification)
-                        .catch(setApiError)
-                        .finally(() => setIsLoading(false));
-                    }}
+                    onChange={(e) => setSelectedRelId(e.target.value)}
                     disabled={isLoading}
                     className="w-full sm:w-auto min-w-[170px] bg-brand-panel-elevated/85 backdrop-blur-sm text-xs font-semibold text-white border border-brand-border-bright rounded-lg px-3 py-2 outline-none cursor-pointer focus:ring-2 focus:ring-quorum-green/50 disabled:opacity-50 transition-all"
                   >

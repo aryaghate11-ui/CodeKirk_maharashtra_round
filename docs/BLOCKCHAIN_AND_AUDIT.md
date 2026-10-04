@@ -86,12 +86,47 @@ it reports integrity only and the CLI exits nonzero. Never obtain your trust
 pin solely from the report you are verifying. Protect the backend's
 `*.report-key` file; it is excluded from Git.
 
-The offline verifier does not query a blockchain. The report endpoint checks
-the anchor against the server's configured RPC network and contract when
-available. This is a server observation, not independent consumer verification.
+By default the verifier is offline. For independent on-chain verification,
+pass `--anchor-config trusted-chain.json`; this configuration must come from a
+trusted channel separate from the report. Add `--require-public-anchor` to fail
+closed unless the evidence matches a recognized public network. Explicit trusted
+config files ignore `QUORUM_*` environment overrides.
+
+The report endpoint also checks the anchor against the server's configured RPC
+network and contract when available, but that remains a server observation.
 The contract restricts writes to its deployer to prevent another account from
 claiming a release ID first. Redeploy after upgrading the contract.
 
 Anvil is a local development chain, not a public immutable network. The same
 small contract can later be deployed to Sepolia without changing the evidence
 format.
+
+## Sepolia deployment with local signing
+
+Quorum can sign EIP-1559 transactions locally and submit only the raw signed
+transaction to an RPC provider. The private key is read from the process-only
+`QUORUM_EVM_PRIVATE_KEY` environment variable and is never saved in the generated
+configuration, report, SQLite database, or logs.
+
+Use a separate test-only wallet funded with free Sepolia test ETH. Set the secret
+through your shell or secret manager, then deploy with an explicit chain-ID check:
+
+```powershell
+$env:QUORUM_RPC_URL = "https://YOUR_SEPOLIA_RPC"
+$env:QUORUM_EVM_PRIVATE_KEY = "YOUR_TEST_WALLET_PRIVATE_KEY"
+.venv\Scripts\python.exe scripts\deploy_blockchain.py `
+  --rpc-url $env:QUORUM_RPC_URL `
+  --chain-id 11155111
+```
+
+The command refuses an RPC reporting a different chain ID and writes the public
+contract address, selectors, sender and deployment receipt to
+`.quorum/blockchain.json`. Keep the same two environment variables set while the
+backend anchors evidence. Remove the private-key variable when finished:
+
+```powershell
+Remove-Item Env:QUORUM_EVM_PRIVATE_KEY
+```
+
+Never use a wallet containing real funds. An actual public deployment cannot be
+completed without a user-controlled RPC endpoint, test wallet and faucet funds.

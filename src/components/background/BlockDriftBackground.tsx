@@ -61,12 +61,12 @@ export const BlockDriftBackground: React.FC<BlockDriftBackgroundProps> = ({
   // - If caller explicitly requested 0, honor it.
   // - If prefersReducedMotion is active, use a calm, gentle ambient drift (speed 2)
   //   rather than freezing the scene to 0 (which appears as a broken/frozen canvas).
-  // - In normal browser settings, ensure dynamic, visibly moving forward corridor speed (>= 8).
+  // - In normal browser settings, honor the caller's requested animation speed.
   const effectiveSpeed = speed === 0
     ? 0
     : prefersReducedMotion
       ? Math.min(speed, 2)
-      : Math.max(speed, 8);
+      : speed;
 
   return (
     <div

@@ -8,12 +8,13 @@ import { AttackLabPage } from './pages/AttackLabPage';
 import { AuditHistoryPage } from './pages/AuditHistoryPage';
 import { SourceSentinelPage } from './pages/SourceSentinelPage';
 import { QuorumRelayPage } from './pages/QuorumRelayPage';
+import { LivingVerificationPage } from './pages/LivingVerificationPage';
 import { SystemStats } from './types';
 import { api } from './services/api';
 
 export const App: React.FC = () => {
   const [currentPage, setCurrentPage] = useState<PageId>('dashboard');
-  const [selectedReleaseId, setSelectedReleaseId] = useState<string>('rel-hey-01');
+  const [selectedReleaseId, setSelectedReleaseId] = useState<string>('');
   const [stats, setStats] = useState<SystemStats | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
 
@@ -74,6 +75,7 @@ export const App: React.FC = () => {
 
       {currentPage === 'sentinel' && <SourceSentinelPage />}
       {currentPage === 'relay' && <QuorumRelayPage />}
+      {currentPage === 'living' && <LivingVerificationPage />}
     </AppShell>
   );
 };

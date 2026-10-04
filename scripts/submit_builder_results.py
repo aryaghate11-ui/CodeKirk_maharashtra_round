@@ -42,6 +42,10 @@ def main() -> None:
     parser.add_argument("results", type=Path, nargs="+", help="Builder result JSON files")
     parser.add_argument("--api-url", default="http://127.0.0.1:8000/api/v1")
     parser.add_argument("--candidate-sha256", help="Published artifact hash; defaults to the first result")
+    parser.add_argument("--release-id",
+                        help="Submit release-bound attestations to an existing coordinator challenge")
+    parser.add_argument("--register-only", action="store_true",
+                        help="Register pending keys for administrator review without submitting attestations")
     parser.add_argument("--threshold", type=int, default=2)
     parser.add_argument(
         "--allow-conflict",
@@ -74,13 +78,17 @@ def main() -> None:
         raise ValueError("All results must refer to the same source commit and build recipe")
 
     first = results[0]
-    for result in results:
+    registrations = [
         api_request(args.api_url, "POST", "/builders", result["builder"])
-    release = api_request(
-        args.api_url,
-        "POST",
-        "/releases",
-        {
+        for result in results
+    ]
+    if args.register_only:
+        print(json.dumps({
+            "registered": registrations,
+            "next": "Review fingerprints and approve expected keys with manage_builder_trust.py",
+        }, indent=2))
+        return
+    release_payload = {
             "repository_url": first["source"]["repository_url"],
             "source_commit": first["source"]["commit"],
             "artifact_name": first["build"]["artifact_name"],
@@ -91,8 +99,21 @@ def main() -> None:
             "threshold": args.threshold,
             "expected_builders": len(results),
             "reject_on_conflict": not args.allow_conflict,
-        },
-    )
+        }
+    if args.release_id:
+        release_record = api_request(args.api_url, "GET", f"/releases/{args.release_id}")
+        registered = release_record["release"]
+        for field in ("repository_url", "artifact_name", "recipe_sha256"):
+            if registered[field] != release_payload[field]:
+                raise ValueError(f"Existing release does not match builder result {field}")
+        if registered["source_commit"] != release_payload["source_commit"]:
+            raise ValueError("Existing release does not match builder result source_commit")
+        for result in results:
+            if result.get("release_id") != args.release_id:
+                raise ValueError("Every result must be signed for the requested release ID")
+        release = {"id": args.release_id}
+    else:
+        release = api_request(args.api_url, "POST", "/releases", release_payload)
     verification = None
     for result in results:
         verification = api_request(

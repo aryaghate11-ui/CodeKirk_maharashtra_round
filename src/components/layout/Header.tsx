@@ -50,6 +50,10 @@ export const Header: React.FC<HeaderProps> = ({
       title: 'Quorum Relay',
       subtitle: 'Post-verification independent witness monitoring to detect artifact tampering or mirror substitution.',
     },
+    living: {
+      title: 'Living Verification',
+      subtitle: 'Re-evaluate historical release trust when a builder key is compromised or reinstated.',
+    },
   };
 
   const currentMeta = pageTitles[currentPage];

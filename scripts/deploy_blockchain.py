@@ -12,7 +12,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from backend.blockchain import rpc_call, wait_for_receipt  # noqa: E402
+from backend.blockchain import BlockchainConfig, broadcast_transaction, rpc_call, wait_for_receipt  # noqa: E402
 
 
 def run(command: list[str], cwd: Path) -> None:
@@ -31,6 +31,8 @@ def run(command: list[str], cwd: Path) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Compile and deploy QuorumEvidence to Anvil")
     parser.add_argument("--rpc-url", default="http://127.0.0.1:8545")
+    parser.add_argument("--chain-id", type=int,
+                        help="Expected chain ID; required protection for public deployment")
     parser.add_argument("--forge", default=os.getenv("QUORUM_FORGE_BINARY") or shutil.which("forge"))
     parser.add_argument("--config", type=Path, default=ROOT / ".quorum" / "blockchain.json")
     parser.add_argument(
@@ -52,16 +54,21 @@ def main() -> None:
     bytecode = artifact["bytecode"]["object"]
     method_ids = artifact["methodIdentifiers"]
 
-    accounts = rpc_call(args.rpc_url, "eth_accounts", [])
-    if not accounts:
-        raise RuntimeError("Anvil did not provide an unlocked deployment account")
     chain_id = int(rpc_call(args.rpc_url, "eth_chainId", []), 16)
-    transaction_hash = rpc_call(
-        args.rpc_url,
-        "eth_sendTransaction",
-        [{"from": accounts[0], "data": bytecode, "gas": hex(3_000_000)}],
+    if args.chain_id is not None and args.chain_id != chain_id:
+        raise RuntimeError(f"Expected chain {args.chain_id}, RPC reported {chain_id}")
+    temporary_config = BlockchainConfig(
+        rpc_url=args.rpc_url, chain_id=chain_id, contract_address="0x" + "0" * 40,
+        from_address=os.getenv("QUORUM_FROM_ADDRESS"), anchor_selector="",
+        get_anchor_selector="", private_key=os.getenv("QUORUM_EVM_PRIVATE_KEY"),
     )
-    receipt = wait_for_receipt(args.rpc_url, transaction_hash)
+    transaction_hash, sender = broadcast_transaction(
+        temporary_config, data=bytecode, gas=3_000_000,
+    )
+    receipt = wait_for_receipt(
+        args.rpc_url, transaction_hash,
+        timeout_seconds=temporary_config.receipt_timeout_seconds,
+    )
     contract_address = receipt.get("contractAddress")
     if not contract_address:
         raise RuntimeError("Deployment receipt did not contain a contract address")
@@ -71,11 +78,12 @@ def main() -> None:
         "rpc_url": args.rpc_url,
         "chain_id": chain_id,
         "contract_address": contract_address,
-        "from_address": accounts[0],
+        "from_address": sender,
         "anchor_selector": method_ids["anchorEvidence(bytes32,bytes32,uint8,bool)"],
         "get_anchor_selector": method_ids["getAnchor(bytes32)"],
         "deployment_transaction": transaction_hash,
         "deployment_block": int(receipt["blockNumber"], 16),
+        "receipt_timeout_seconds": temporary_config.receipt_timeout_seconds,
     }
     args.config.parent.mkdir(parents=True, exist_ok=True)
     args.config.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")

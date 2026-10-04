@@ -12,7 +12,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from builder.agent import build_release, generate_private_key, load_config, load_private_key  # noqa: E402
+from builder.agent import (apply_recipe, build_release, generate_private_key, load_config,
+                           load_private_key, load_recipe)  # noqa: E402
 
 
 CONFIGS = (
@@ -49,6 +50,12 @@ def main() -> None:
         help="Append a visible marker after this builder completes, producing a signed conflict",
     )
     parser.add_argument("--results-dir", type=Path, default=ROOT / "builder-results")
+    parser.add_argument("--recipe", type=Path,
+                        help="Build a different pinned package with all three identities")
+    parser.add_argument(
+        "--approve-local-builders", action="store_true",
+        help="Approve generated keys locally by exact fingerprint (demo-only admin action)",
+    )
     args = parser.parse_args()
 
     health = api_request(args.api_url, "GET", "/health")
@@ -63,6 +70,8 @@ def main() -> None:
 
     for config_path in CONFIGS:
         config = load_config(config_path)
+        if args.recipe:
+            config = apply_recipe(config, load_recipe(args.recipe))
         builder_id = config["builder"]["id"]
         key_path = key_dir / f"{builder_id}.pem"
         if not key_path.exists():
@@ -90,8 +99,24 @@ def main() -> None:
     if len(expected) != 1:
         raise RuntimeError("Builder results do not describe the same source and recipe")
 
+    registrations = []
     for result in results:
-        api_request(args.api_url, "POST", "/builders", result["builder"])
+        registrations.append(api_request(args.api_url, "POST", "/builders", result["builder"]))
+    if args.approve_local_builders:
+        from backend import main as backend_main
+        backend_main.init_db()
+        for registration in registrations:
+            backend_main.set_builder_trust(
+                registration["id"], trusted=True,
+                expected_fingerprint=registration["signing_key_fingerprint"],
+                reason="Explicit same-host demonstration approval",
+            )
+    pending = [item["id"] for item in registrations if not item["trusted"]]
+    if pending and not args.approve_local_builders:
+        raise RuntimeError(
+            "Builders are pending trust approval: " + ", ".join(pending)
+            + ". Review fingerprints with scripts/manage_builder_trust.py."
+        )
 
     created = api_request(
         args.api_url,

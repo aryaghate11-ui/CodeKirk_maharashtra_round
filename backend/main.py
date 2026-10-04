@@ -26,6 +26,16 @@ from backend import blockchain
 from backend.policy import QuorumPolicy, decide
 from backend.sentinel import sentinel_router, init_sentinel_db
 from backend.relay import relay_router, init_relay_db, start_relay_scheduler, stop_relay_scheduler
+from backend.living import (
+    living_router,
+    get_assessment,
+    init_living_db,
+    is_builder_compromised,
+    list_incidents,
+    reassess_all,
+    reassess_release,
+    verify_incident_chain,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -72,7 +82,18 @@ def init_db() -> None:
                 operator TEXT NOT NULL,
                 platform TEXT NOT NULL,
                 public_key TEXT NOT NULL,
-                trusted INTEGER NOT NULL DEFAULT 1,
+                trusted INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS builder_trust_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                builder_id TEXT NOT NULL REFERENCES builders(id),
+                action TEXT NOT NULL,
+                fingerprint TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                previous_hash TEXT NOT NULL,
+                event_hash TEXT NOT NULL,
                 created_at TEXT NOT NULL
             );
 
@@ -134,13 +155,16 @@ def init_db() -> None:
 
             CREATE INDEX IF NOT EXISTS idx_audit_events_release_id
             ON audit_events(release_id, id);
+
+            CREATE INDEX IF NOT EXISTS idx_builder_trust_events
+            ON builder_trust_events(id);
             """
         )
         release_columns = {
             row["name"] for row in db.execute("PRAGMA table_info(releases)").fetchall()
         }
         if "artifact_name" not in release_columns:
-            db.execute(
+            cursor = db.execute(
                 "ALTER TABLE releases ADD COLUMN artifact_name TEXT NOT NULL DEFAULT 'release-artifact'"
             )
         if "expected_builders" not in release_columns:
@@ -150,8 +174,21 @@ def init_db() -> None:
         db.execute("PRAGMA optimize")
         db.execute('CREATE TABLE IF NOT EXISTS release_policies (release_id TEXT PRIMARY KEY REFERENCES releases(id), policy_json TEXT NOT NULL)')
         db.execute('CREATE TABLE IF NOT EXISTS release_recipes (release_id TEXT PRIMARY KEY REFERENCES releases(id), recipe_json TEXT NOT NULL)')
+        legacy_trusted = db.execute(
+            """SELECT b.id, b.public_key FROM builders b
+               WHERE b.trusted = 1 AND NOT EXISTS (
+                   SELECT 1 FROM builder_trust_events e WHERE e.builder_id = b.id
+               )"""
+        ).fetchall()
+        for builder in legacy_trusted:
+            append_builder_trust_event(
+                db, builder["id"], "legacy-import-approved",
+                hashlib.sha256(base64.b64decode(builder["public_key"])).hexdigest(),
+                "Trusted identity migrated from the pre-approval registry",
+            )
         init_sentinel_db(db)
         init_relay_db(db)
+        init_living_db(db)
     seed_demo_builders()
 
 
@@ -174,7 +211,7 @@ def seed_demo_builders() -> None:
     with connect() as db:
         for builder_id, name, operator, platform in builders:
             public_key = encode_public_key(demo_private_key(builder_id).public_key())
-            db.execute(
+            cursor = db.execute(
                 """
                 INSERT OR IGNORE INTO builders
                     (id, name, operator, platform, public_key, trusted, created_at)
@@ -182,6 +219,98 @@ def seed_demo_builders() -> None:
                 """,
                 (builder_id, name, operator, platform, public_key, utc_now()),
             )
+            if cursor.rowcount:
+                append_builder_trust_event(
+                    db, builder_id, "demo-seed-approved",
+                    hashlib.sha256(base64.b64decode(public_key)).hexdigest(),
+                    "Built-in deterministic demonstration identity",
+                )
+
+
+def append_builder_trust_event(
+    db: sqlite3.Connection,
+    builder_id: str,
+    action: str,
+    fingerprint: str,
+    reason: str,
+) -> str:
+    previous = db.execute(
+        "SELECT event_hash FROM builder_trust_events ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    previous_hash = previous["event_hash"] if previous else "0" * 64
+    created_at = utc_now()
+    payload = canonical_json({
+        "builder_id": builder_id,
+        "action": action,
+        "fingerprint": fingerprint,
+        "reason": reason,
+    })
+    event_hash = hashlib.sha256(
+        f"{previous_hash}|{payload}|{created_at}".encode()
+    ).hexdigest()
+    db.execute(
+        """INSERT INTO builder_trust_events
+           (builder_id, action, fingerprint, reason, previous_hash, event_hash, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (builder_id, action, fingerprint, reason, previous_hash, event_hash, created_at),
+    )
+    return event_hash
+
+
+def verify_builder_trust_chain() -> dict:
+    with connect() as db:
+        rows = db.execute("SELECT * FROM builder_trust_events ORDER BY id").fetchall()
+    previous_hash = "0" * 64
+    errors = []
+    for row in rows:
+        payload = canonical_json({
+            "builder_id": row["builder_id"], "action": row["action"],
+            "fingerprint": row["fingerprint"], "reason": row["reason"],
+        })
+        expected = hashlib.sha256(
+            f"{previous_hash}|{payload}|{row['created_at']}".encode()
+        ).hexdigest()
+        if row["previous_hash"] != previous_hash or row["event_hash"] != expected:
+            errors.append(f"Invalid builder trust event {row['id']}")
+            break
+        previous_hash = expected
+    return {
+        "valid": not errors,
+        "event_count": len(rows),
+        "chain_head": previous_hash if rows else None,
+        "errors": errors,
+    }
+
+
+def get_builder_trust_events() -> list[dict]:
+    with connect() as db:
+        return [dict(row) for row in db.execute(
+            """SELECT builder_id, action, fingerprint, reason, previous_hash,
+                      event_hash, created_at
+               FROM builder_trust_events ORDER BY id"""
+        ).fetchall()]
+
+
+def set_builder_trust(
+    builder_id: str,
+    *,
+    trusted: bool,
+    expected_fingerprint: str,
+    reason: str,
+) -> dict:
+    with connect() as db:
+        builder = db.execute("SELECT * FROM builders WHERE id = ?", (builder_id,)).fetchone()
+        if not builder:
+            raise ValueError(f"Unknown builder: {builder_id}")
+        actual = hashlib.sha256(base64.b64decode(builder["public_key"], validate=True)).hexdigest()
+        if actual != expected_fingerprint.lower():
+            raise ValueError("Builder fingerprint does not match the independently reviewed key")
+        if bool(builder["trusted"]) != trusted:
+            db.execute("UPDATE builders SET trusted = ? WHERE id = ?", (int(trusted), builder_id))
+            append_builder_trust_event(
+                db, builder_id, "approved" if trusted else "revoked", actual, reason
+            )
+    return next(builder for builder in list_builders() if builder["id"] == builder_id)
 
 
 def append_audit_event(db: sqlite3.Connection, release_id: str, event_type: str, event: dict) -> str:
@@ -451,6 +580,11 @@ def submit_attestation(release_id: str, data: AttestationCreate) -> dict:
         builder = db.execute("SELECT * FROM builders WHERE id = ?", (data.builder_id,)).fetchone()
         if not builder or not builder["trusted"]:
             raise HTTPException(status_code=403, detail="Builder is not trusted")
+        if is_builder_compromised(data.builder_id):
+            raise HTTPException(
+                status_code=403,
+                detail="Builder is blocked by an active Living Verification compromise incident",
+            )
 
         payload = attestation_payload(release, data)
         try:
@@ -622,6 +756,7 @@ def get_release_record(release_id: str) -> dict:
 
 
 def build_evidence_snapshot(release_id: str) -> dict:
+    reassess_release(release_id)
     verification = get_release_record(release_id)
     with connect() as db:
         public_keys = {
@@ -654,6 +789,13 @@ def build_evidence_snapshot(release_id: str) -> dict:
         "policy": policy,
         "policy_sha256": hashlib.sha256(canonical_json(policy).encode()).hexdigest(),
         "builders": builders,
+        "builder_trust_events": get_builder_trust_events(),
+        "builder_trust_chain": verify_builder_trust_chain(),
+        "living_verification": {
+            "assessment": get_assessment(release_id),
+            "incidents": list_incidents(),
+            "incident_chain": verify_incident_chain(),
+        },
         "audit_events": verification["audit_events"],
         "audit_chain_head": verification["audit_chain_head"],
     }
@@ -688,16 +830,28 @@ def generate_audit_report(release_id: str) -> dict:
             "release_id_hash": anchor["release_id_hash"],
             "submitter": anchor["submitter"],
             "anchored_at": anchor["anchored_at"],
+            "network": blockchain.network_name(anchor["chain_id"]),
+            "anchor_scope": "public-network" if blockchain.is_public_chain(anchor["chain_id"]) else "local-or-private-network",
+            "independent_public_anchor": False,
         }
         config = blockchain.load_config()
-        if config:
+        config_matches = bool(
+            config
+            and config.chain_id == anchor["chain_id"]
+            and config.contract_address.lower() == anchor["contract_address"].lower()
+        )
+        if config_matches:
             blockchain_record["get_anchor_selector"] = config.get_anchor_selector
         try:
-            on_chain = blockchain.read_anchor(config, release_id) if config else None
+            on_chain = blockchain.read_anchor(config, release_id) if config_matches else None
             blockchain_record["on_chain_match"] = bool(
                 on_chain
                 and on_chain["evidence_sha256"] == evidence_sha256
                 and on_chain["release_id_hash"] == anchor["release_id_hash"]
+            )
+            blockchain_record["independent_public_anchor"] = bool(
+                blockchain_record["on_chain_match"]
+                and blockchain.is_public_chain(anchor["chain_id"])
             )
         except blockchain.BlockchainError:
             blockchain_record["on_chain_match"] = None
@@ -834,9 +988,18 @@ def verify_consumer_artifact(release_id: str, data: ConsumerArtifactRequest) -> 
     elif not hash_matches:
         decision = "rejected"
         reason = "The selected file does not match the hash reproduced by the builders."
-    elif not verification["rules"]["conflicts"] and release["reject_on_conflict"]:
+    elif verification["status"] == "disagreement":
         decision = "conflict"
-        reason = "The file matches the majority, but the active policy rejects builder disagreement."
+        reason = "The active policy rejects disagreement between builders."
+    elif verification["status"] == "rejected":
+        decision = "rejected"
+        reason = "The release itself was rejected by the quorum policy."
+    elif verification["status"] != "verified":
+        decision = "pending"
+        reason = "The release has not reached a final verified quorum decision."
+    elif data.artifact_sha256 != release["candidate_sha256"]:
+        decision = "rejected"
+        reason = "The selected file does not match the published release candidate."
     elif verification["rules"]["matches"] and verification["rules"]["operators"]:
         decision = "accepted"
         reason = "The selected file matches the independently reproduced consensus hash."
@@ -873,6 +1036,60 @@ def verify_consumer_artifact(release_id: str, data: ConsumerArtifactRequest) -> 
     }
 
 
+def verify_system_integrity() -> dict:
+    """Verify every release independently so one corrupt record cannot hide the rest."""
+    from backend.passport import verify_passport
+
+    with connect() as db:
+        release_ids = [row["id"] for row in db.execute(
+            "SELECT id FROM releases ORDER BY created_at, rowid"
+        ).fetchall()]
+
+    releases = []
+    for release_id in release_ids:
+        try:
+            report = generate_audit_report(release_id)
+            result = verify_passport(report, report["report_signature"]["public_key"])
+            anchor = report["blockchain"]
+            releases.append({
+                "release_id": release_id,
+                "valid": result["valid"],
+                "checks": result["checks"],
+                "errors": result["errors"],
+                "anchored": bool(anchor.get("anchored")),
+                "on_chain_match": anchor.get("on_chain_match"),
+                "independent_public_anchor": bool(anchor.get("independent_public_anchor")),
+            })
+        except Exception as error:
+            releases.append({
+                "release_id": release_id,
+                "valid": False,
+                "checks": {},
+                "errors": [str(error) or type(error).__name__],
+                "anchored": False,
+                "on_chain_match": None,
+                "independent_public_anchor": False,
+            })
+
+    valid_count = sum(item["valid"] for item in releases)
+    externally_anchored_count = sum(item["independent_public_anchor"] for item in releases)
+    builder_trust = verify_builder_trust_chain()
+    living_incidents = verify_incident_chain()
+    return {
+        "schema_version": "quorum.system-integrity.v1",
+        "checked_at": utc_now(),
+        "valid": valid_count == len(releases) and builder_trust["valid"] and living_incidents["valid"],
+        "release_count": len(releases),
+        "valid_release_count": valid_count,
+        "externally_anchored_count": externally_anchored_count,
+        "external_anchoring_complete": bool(releases) and externally_anchored_count == len(releases),
+        "scope": "Local signed evidence and audit chains; public anchoring is reported separately.",
+        "builder_trust_chain": builder_trust,
+        "living_incident_chain": living_incidents,
+        "releases": releases,
+    }
+
+
 def get_system_stats() -> dict:
     with connect() as db:
         release_counts = {
@@ -899,7 +1116,7 @@ def get_system_stats() -> dict:
         "releases_rejected": release_counts.get("rejected", 0),
         "conflicts_detected": release_counts.get("disagreement", 0),
         "active_builders": active_builders,
-        "network": f"Anvil {blockchain_config.chain_id}" if blockchain_config else "Local verifier",
+        "network": blockchain.network_name(blockchain_config.chain_id) if blockchain_config else "Local verifier",
         "contract_address": blockchain_config.contract_address if blockchain_config else "Not configured",
         "consensus_health": consensus_health,
         "average_verification_time_seconds": 0.0,
@@ -929,10 +1146,10 @@ def register_builder(data: BuilderRegistrationRequest) -> dict:
         duplicate = db.execute('SELECT id FROM builders WHERE public_key = ? AND id != ?', (data.public_key, data.id)).fetchone()
         if duplicate:
             raise HTTPException(status_code=409, detail='Signing key is already registered to another builder')
-        db.execute(
+        cursor = db.execute(
             """
             INSERT INTO builders (id, name, operator, platform, public_key, trusted, created_at)
-            VALUES (?, ?, ?, ?, ?, 1, ?)
+            VALUES (?, ?, ?, ?, ?, 0, ?)
             ON CONFLICT(id) DO UPDATE SET
                 name = excluded.name,
                 operator = excluded.operator,
@@ -940,6 +1157,11 @@ def register_builder(data: BuilderRegistrationRequest) -> dict:
             """,
             (data.id, data.name, data.operator, data.platform, data.public_key, utc_now()),
         )
+        if cursor.rowcount and not existing:
+            append_builder_trust_event(
+                db, data.id, "registered-pending", hashlib.sha256(public_key_raw).hexdigest(),
+                "Registration does not grant trust",
+            )
     return next(builder for builder in list_builders() if builder["id"] == data.id)
 
 
@@ -960,7 +1182,6 @@ def list_builders() -> list[dict]:
                    AND r.consensus_sha256 IS NOT NULL
                    AND a.artifact_sha256 = r.consensus_sha256) AS matching_builds
             FROM builders b
-            WHERE b.trusted = 1
             ORDER BY b.created_at, b.id
             """
         ).fetchall()
@@ -1007,6 +1228,7 @@ def sign_demo_attestation(release_id: str, builder_id: str, artifact_hash: str, 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     init_db()
+    reassess_all()
     start_relay_scheduler()
     try:
         yield
@@ -1028,6 +1250,7 @@ app.add_middleware(
 )
 app.include_router(sentinel_router)
 app.include_router(relay_router)
+app.include_router(living_router)
 
 
 @app.get("/api/health")
@@ -1163,6 +1386,11 @@ def integrity_v1(release_id: str) -> dict:
     result = verify_passport(report, report['report_signature']['public_key'])
     return {**result, 'scope': 'Current backend snapshot, not an external checkpoint',
             'report_public_key': report['report_signature']['public_key']}
+
+
+@app.get('/api/v1/integrity')
+def system_integrity_v1() -> dict:
+    return verify_system_integrity()
 
 
 class AttackRequest(BaseModel):

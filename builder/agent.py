@@ -17,8 +17,10 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 
 CONFIG_SCHEMA = "quorum.builder-config.v1"
+RECIPE_SCHEMA = "quorum.build-target.v1"
 RESULT_SCHEMA = "quorum.builder-result.v1"
-ATTESTATION_SCHEMA = "quorum.attestation.v2"
+REUSABLE_ATTESTATION_SCHEMA = "quorum.attestation.v2"
+CHALLENGE_ATTESTATION_SCHEMA = "quorum.attestation.v1"
 
 
 def canonical_json(value: dict) -> str:
@@ -36,6 +38,28 @@ def load_config(path: Path) -> dict:
     if len(commit) != 40 or any(character not in "0123456789abcdef" for character in commit):
         raise ValueError("source.commit must be a full lowercase 40-character Git commit")
     return config
+
+
+def load_recipe(path: Path) -> dict:
+    recipe = json.loads(path.read_text(encoding="utf-8"))
+    if recipe.get("schema_version") != RECIPE_SCHEMA:
+        raise ValueError(f"Expected {RECIPE_SCHEMA}")
+    for section in ("source", "build"):
+        if not isinstance(recipe.get(section), dict):
+            raise ValueError(f"Missing recipe section: {section}")
+    commit = recipe["source"].get("commit", "")
+    if len(commit) != 40 or any(character not in "0123456789abcdef" for character in commit):
+        raise ValueError("source.commit must be a full lowercase 40-character Git commit")
+    return recipe
+
+
+def apply_recipe(config: dict, recipe: dict) -> dict:
+    """Combine an operator identity with a separately versioned build target."""
+    return {
+        **config,
+        "source": recipe["source"],
+        "build": recipe["build"],
+    }
 
 
 def recipe_document(config: dict) -> dict:
@@ -126,9 +150,16 @@ def observed_environment(config: dict, go_version: str) -> str:
     )[:200]
 
 
-def signed_payload(config: dict, artifact_sha256: str, environment: str) -> dict:
-    return {
-        "schema_version": ATTESTATION_SCHEMA,
+def signed_payload(
+    config: dict,
+    artifact_sha256: str,
+    environment: str,
+    *,
+    release_id: str | None = None,
+    built_at: str | None = None,
+) -> dict:
+    payload = {
+        "schema_version": REUSABLE_ATTESTATION_SCHEMA,
         "repository_url": config["source"]["repository_url"],
         "artifact_sha256": artifact_sha256,
         "artifact_name": config["build"]["artifact_name"],
@@ -137,6 +168,16 @@ def signed_payload(config: dict, artifact_sha256: str, environment: str) -> dict
         "recipe_sha256": recipe_sha256(config),
         "source_commit": config["source"]["commit"],
     }
+    if release_id:
+        if not built_at:
+            raise ValueError("built_at is required for a release-specific attestation")
+        payload.update({
+            "schema_version": CHALLENGE_ATTESTATION_SCHEMA,
+            "release_id": release_id,
+            "built_at": built_at,
+            "environment": environment,
+        })
+    return payload
 
 
 def build_release(
@@ -146,6 +187,7 @@ def build_release(
     work_root: Path | None = None,
     keep_workdir: bool = False,
     tamper: bool = False,
+    release_id: str | None = None,
 ) -> dict:
     git_binary = shutil.which("git")
     go_binary = os.getenv("QUORUM_GO_BINARY") or shutil.which("go")
@@ -199,12 +241,13 @@ def build_release(
 
         artifact_hash = hashlib.sha256(artifact_path.read_bytes()).hexdigest()
         environment = observed_environment(config, go_version)
-        payload = signed_payload(config, artifact_hash, environment)
+        built_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        payload = signed_payload(config, artifact_hash, environment,
+                                 release_id=release_id, built_at=built_at)
         signature = base64.b64encode(
             private_key.sign(canonical_json(payload).encode())
         ).decode()
         public_key = encode_public_key(private_key)
-        built_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
         result = {
             "schema_version": RESULT_SCHEMA,
             "builder": {
@@ -231,7 +274,7 @@ def build_release(
                 "intentionally_tampered": tamper,
             },
             "attestation": {
-                "schema_version": ATTESTATION_SCHEMA,
+                "schema_version": payload["schema_version"],
                 "builder_id": config["builder"]["id"],
                 "artifact_sha256": artifact_hash,
                 "environment": environment,
@@ -240,6 +283,8 @@ def build_release(
             },
             "signed_payload": payload,
         }
+        if release_id:
+            result["release_id"] = release_id
         if keep_workdir:
             result["workspace"] = str(workspace)
         return result
@@ -263,6 +308,10 @@ def main() -> None:
     run_parser.add_argument("--generate-key", action="store_true")
     run_parser.add_argument("--keep-workdir", action="store_true")
     run_parser.add_argument("--tamper", action="store_true")
+    run_parser.add_argument("--recipe", type=Path,
+                            help="Optional build target shared by independent operators")
+    run_parser.add_argument("--release-id",
+                            help="Bind the signature to a coordinator-created release challenge")
     args = parser.parse_args()
 
     if args.command == "keygen":
@@ -271,6 +320,8 @@ def main() -> None:
         return
 
     config = load_config(args.config)
+    if args.recipe:
+        config = apply_recipe(config, load_recipe(args.recipe))
     if args.generate_key and not args.key.exists():
         generate_private_key(args.key)
     key = load_private_key(args.key)
@@ -280,6 +331,7 @@ def main() -> None:
         work_root=args.work_root,
         keep_workdir=args.keep_workdir,
         tamper=args.tamper,
+        release_id=args.release_id,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")

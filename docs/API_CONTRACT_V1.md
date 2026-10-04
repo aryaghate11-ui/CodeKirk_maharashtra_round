@@ -24,7 +24,7 @@ maps these wire-format `snake_case` fields into its display model.
 
 ### `GET /api/v1/builders`
 
-Returns the trusted builder registry, public-key fingerprints, latest signed
+Returns the builder registry, including pending/trusted state, public-key fingerprints, latest signed
 artifact hash, build count and measured agreement rate. Private keys are never
 stored by the API.
 

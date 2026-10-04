@@ -9,13 +9,14 @@ import {
   ExternalLink,
   Lock,
   GitCompare,
+  RefreshCcw,
 } from 'lucide-react';
 import { QuorumLogo } from '../common/QuorumLogo';
 import { CopyButton } from '../common/CopyButton';
 import { truncateAddress } from '../../lib/utils';
 import { SystemStats } from '../../types';
 
-export type PageId = 'dashboard' | 'verification' | 'builders' | 'attack-lab' | 'audit' | 'sentinel' | 'relay';
+export type PageId = 'dashboard' | 'verification' | 'builders' | 'attack-lab' | 'audit' | 'sentinel' | 'relay' | 'living';
 
 interface SidebarProps {
   currentPage: PageId;
@@ -74,6 +75,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
       label: 'Quorum Relay',
       icon: Radio,
       description: 'Artifact witness monitoring',
+    },
+    {
+      id: 'living' as PageId,
+      label: 'Living Verification',
+      icon: RefreshCcw,
+      description: 'Re-evaluate trust over time',
     },
   ];
 

@@ -118,6 +118,12 @@ export const BuilderStatusBadge: React.FC<{ status: BuilderStatus }> = ({ status
           OFFLINE
         </Badge>
       );
+    case 'PENDING_APPROVAL':
+      return (
+        <Badge variant="amber" size="sm" dot>
+          PENDING APPROVAL
+        </Badge>
+      );
   }
 };
 

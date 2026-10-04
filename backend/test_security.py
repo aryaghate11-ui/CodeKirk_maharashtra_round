@@ -5,11 +5,14 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 from fastapi.testclient import TestClient
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from backend import main
+from backend import blockchain
 from backend.passport import sign_report, verify_passport
 from backend.policy import QuorumPolicy, decide
+from scripts.quorum_install_gate import evaluate_installation
 
 
 class SecurityTests(unittest.TestCase):
@@ -71,6 +74,139 @@ class SecurityTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()['policy']['threshold'], 3)
         self.assertEqual(main.get_release_record(release_id)['threshold'], 2)
+
+    def test_new_builder_requires_fingerprint_checked_approval(self):
+        private_key = Ed25519PrivateKey.generate()
+        public_key = main.encode_public_key(private_key.public_key())
+        builder_id = 'pending-builder'
+        registered = main.register_builder(main.BuilderRegistrationRequest(
+            id=builder_id, name='Pending Builder', operator='Independent Operator',
+            platform='separate machine', public_key=public_key))
+        self.assertFalse(registered['trusted'])
+
+        created = main.create_release(main.ReleaseCreate(
+            repository_url='https://github.com/rakyll/hey', source_commit=main.DEMO_SOURCE_COMMIT,
+            artifact_name='hey-linux-amd64', recipe_sha256=main.DEMO_RECIPE_SHA256,
+            candidate_sha256=main.GOOD_ARTIFACT_SHA256))
+        unsigned = main.AttestationCreate(
+            builder_id=builder_id, artifact_sha256=main.GOOD_ARTIFACT_SHA256,
+            environment='separate machine', built_at=main.utc_now(), signature='pending')
+        with main.connect() as db:
+            release = db.execute('SELECT * FROM releases WHERE id = ?', (created['id'],)).fetchone()
+        signature = base64.b64encode(private_key.sign(
+            main.canonical_json(main.attestation_payload(release, unsigned)).encode())).decode()
+        signed = unsigned.model_copy(update={'signature': signature})
+        with self.assertRaises(main.HTTPException) as refused:
+            main.submit_attestation(created['id'], signed)
+        self.assertEqual(refused.exception.status_code, 403)
+
+        with self.assertRaises(ValueError):
+            main.set_builder_trust(builder_id, trusted=True, expected_fingerprint='0' * 64,
+                                   reason='Incorrect review')
+        fingerprint = hashlib.sha256(base64.b64decode(public_key)).hexdigest()
+        approved = main.set_builder_trust(builder_id, trusted=True,
+            expected_fingerprint=fingerprint, reason='Verified through a second channel')
+        self.assertTrue(approved['trusted'])
+        self.assertEqual(main.submit_attestation(created['id'], signed)['attestation_count'], 1)
+        self.assertTrue(main.verify_builder_trust_chain()['valid'])
+
+        main.set_builder_trust(builder_id, trusted=False,
+            expected_fingerprint=fingerprint, reason='Operator access revoked')
+        self.assertFalse(next(item for item in main.list_builders() if item['id'] == builder_id)['trusted'])
+
+    def test_builder_trust_audit_chain_detects_tampering(self):
+        self.assertTrue(main.verify_builder_trust_chain()['valid'])
+        with main.connect() as db:
+            db.execute("UPDATE builder_trust_events SET reason = 'changed' WHERE id = 1")
+        self.assertFalse(main.verify_builder_trust_chain()['valid'])
+
+    def test_passport_binds_builder_trust_approvals(self):
+        report = self.report()
+        self.assertTrue(verify_passport(report)['checks']['builder_trust_approvals'])
+        report['evidence']['builder_trust_events'][0]['reason'] = 'forged approval reason'
+        self.assertFalse(verify_passport(self.resign(report))['valid'])
+
+    def test_public_chain_transaction_is_locally_signed(self):
+        from eth_account import Account
+        account = Account.create()
+        calls = []
+
+        def fake_rpc(_url, method, params):
+            calls.append((method, params))
+            return {
+                'eth_getTransactionCount': '0x0',
+                'eth_getBlockByNumber': {'baseFeePerGas': '0x3b9aca00'},
+                'eth_maxPriorityFeePerGas': '0x59682f00',
+                'eth_sendRawTransaction': '0x' + '12' * 32,
+            }[method]
+
+        config = blockchain.BlockchainConfig(
+            rpc_url='https://rpc.example.invalid', chain_id=11155111,
+            contract_address='0x' + '11' * 20, from_address=account.address,
+            anchor_selector='12345678', get_anchor_selector='87654321',
+            private_key=account.key.hex())
+        with patch('backend.blockchain.rpc_call', side_effect=fake_rpc):
+            transaction_hash, sender = blockchain.broadcast_transaction(
+                config, to=config.contract_address, data='0x1234', gas=100_000)
+        self.assertEqual(sender, account.address)
+        self.assertEqual(transaction_hash, '0x' + '12' * 32)
+        raw_calls = [params for method, params in calls if method == 'eth_sendRawTransaction']
+        self.assertEqual(len(raw_calls), 1)
+        self.assertTrue(raw_calls[0][0].startswith('0x'))
+
+    def test_consumer_release_decision_is_fail_closed(self):
+        valid = main.run_demo_verification('valid')
+        accepted = main.verify_consumer_artifact(valid['release_id'], main.ConsumerArtifactRequest(
+            artifact_name='hey-linux-amd64', artifact_sha256=main.GOOD_ARTIFACT_SHA256))
+        self.assertEqual(accepted['decision'], 'accepted')
+
+        compromised = main.run_demo_verification('tampered')
+        rejected = main.verify_consumer_artifact(compromised['release_id'], main.ConsumerArtifactRequest(
+            artifact_name='hey-linux-amd64', artifact_sha256=main.GOOD_ARTIFACT_SHA256))
+        self.assertEqual(rejected['quorum_status'], 'rejected')
+        self.assertEqual(rejected['decision'], 'rejected')
+
+        conflict = main.run_demo_verification('conflict')
+        refused = main.verify_consumer_artifact(conflict['release_id'], main.ConsumerArtifactRequest(
+            artifact_name='hey-linux-amd64', artifact_sha256=main.GOOD_ARTIFACT_SHA256))
+        self.assertEqual(refused['decision'], 'conflict')
+
+    def test_install_gate_requires_signed_verified_candidate(self):
+        report = self.report()
+        key = report['report_signature']['public_key']
+        accepted = evaluate_installation(report,
+            artifact_sha256=main.GOOD_ARTIFACT_SHA256,
+            artifact_name='hey-linux-amd64', trusted_report_key=key)
+        self.assertTrue(accepted['accepted'])
+
+        for changes in (
+            {'artifact_sha256': '0' * 64},
+            {'artifact_name': 'different-file'},
+            {'trusted_report_key': main.encode_public_key(Ed25519PrivateKey.generate().public_key())},
+            {'require_public_anchor': True},
+        ):
+            arguments = dict(artifact_sha256=main.GOOD_ARTIFACT_SHA256,
+                             artifact_name='hey-linux-amd64', trusted_report_key=key)
+            arguments.update(changes)
+            with self.subTest(changes=changes):
+                self.assertFalse(evaluate_installation(report, **arguments)['accepted'])
+
+    def test_system_integrity_scans_all_releases_and_surfaces_tampering(self):
+        first = main.run_demo_verification('valid')['release_id']
+        second = main.run_demo_verification('valid')['release_id']
+        clean = self.client.get('/api/v1/integrity')
+        self.assertEqual(clean.status_code, 200)
+        self.assertTrue(clean.json()['valid'])
+        self.assertEqual(clean.json()['release_count'], 2)
+
+        with main.connect() as db:
+            db.execute("UPDATE audit_events SET event_json = '{}' WHERE release_id = ?", (second,))
+        damaged = self.client.get('/api/v1/integrity').json()
+        self.assertFalse(damaged['valid'])
+        self.assertEqual(damaged['valid_release_count'], 1)
+        by_id = {item['release_id']: item for item in damaged['releases']}
+        self.assertTrue(by_id[first]['valid'])
+        self.assertFalse(by_id[second]['valid'])
 
     def test_report_key_pin_required_for_trust(self):
         report = self.report()
