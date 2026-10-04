@@ -8,13 +8,14 @@ import {
   Radio,
   ExternalLink,
   Lock,
+  GitCompare,
 } from 'lucide-react';
 import { QuorumLogo } from '../common/QuorumLogo';
 import { CopyButton } from '../common/CopyButton';
 import { truncateAddress } from '../../lib/utils';
 import { SystemStats } from '../../types';
 
-export type PageId = 'dashboard' | 'verification' | 'builders' | 'attack-lab' | 'audit';
+export type PageId = 'dashboard' | 'verification' | 'builders' | 'attack-lab' | 'audit' | 'sentinel' | 'relay';
 
 interface SidebarProps {
   currentPage: PageId;
@@ -45,6 +46,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
       description: 'Check artifact consensus',
     },
     {
+      id: 'sentinel' as PageId,
+      label: 'Source Sentinel',
+      icon: GitCompare,
+      description: 'Pre-release source security',
+    },
+    {
       id: 'builders' as PageId,
       label: 'Builders',
       icon: Server,
@@ -61,6 +68,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
       label: 'Audit History',
       icon: ScrollText,
       description: 'Cryptographic event trail',
+    },
+    {
+      id: 'relay' as PageId,
+      label: 'Quorum Relay',
+      icon: Radio,
+      description: 'Artifact witness monitoring',
     },
   ];
 

@@ -24,6 +24,8 @@ from pydantic import BaseModel, Field, HttpUrl, model_validator
 
 from backend import blockchain
 from backend.policy import QuorumPolicy, decide
+from backend.sentinel import sentinel_router, init_sentinel_db
+from backend.relay import relay_router, init_relay_db, start_relay_scheduler, stop_relay_scheduler
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -148,6 +150,8 @@ def init_db() -> None:
         db.execute("PRAGMA optimize")
         db.execute('CREATE TABLE IF NOT EXISTS release_policies (release_id TEXT PRIMARY KEY REFERENCES releases(id), policy_json TEXT NOT NULL)')
         db.execute('CREATE TABLE IF NOT EXISTS release_recipes (release_id TEXT PRIMARY KEY REFERENCES releases(id), recipe_json TEXT NOT NULL)')
+        init_sentinel_db(db)
+        init_relay_db(db)
     seed_demo_builders()
 
 
@@ -1003,7 +1007,11 @@ def sign_demo_attestation(release_id: str, builder_id: str, artifact_hash: str, 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     init_db()
-    yield
+    start_relay_scheduler()
+    try:
+        yield
+    finally:
+        stop_relay_scheduler()
 
 
 app = FastAPI(title="Quorum Verification API", version="0.1.0", lifespan=lifespan)
@@ -1015,9 +1023,11 @@ app.add_middleware(
         "http://127.0.0.1:5173",
         "http://localhost:5173",
     ],
-    allow_methods=["GET", "POST"],
+    allow_methods=["GET", "POST", "PATCH", "DELETE"],
     allow_headers=["Content-Type"],
 )
+app.include_router(sentinel_router)
+app.include_router(relay_router)
 
 
 @app.get("/api/health")

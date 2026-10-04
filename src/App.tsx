@@ -6,6 +6,8 @@ import { ReleaseVerificationPage } from './pages/ReleaseVerificationPage';
 import { BuildersPage } from './pages/BuildersPage';
 import { AttackLabPage } from './pages/AttackLabPage';
 import { AuditHistoryPage } from './pages/AuditHistoryPage';
+import { SourceSentinelPage } from './pages/SourceSentinelPage';
+import { QuorumRelayPage } from './pages/QuorumRelayPage';
 import { SystemStats } from './types';
 import { api } from './services/api';
 
@@ -69,6 +71,9 @@ export const App: React.FC = () => {
       {currentPage === 'attack-lab' && <AttackLabPage />}
 
       {currentPage === 'audit' && <AuditHistoryPage />}
+
+      {currentPage === 'sentinel' && <SourceSentinelPage />}
+      {currentPage === 'relay' && <QuorumRelayPage />}
     </AppShell>
   );
 };

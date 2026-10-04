@@ -20,6 +20,21 @@ import {
   ApiVerificationStatus,
 } from '../types/api';
 import {
+  FixtureItem,
+  CompareRequest,
+  ComparisonResponse,
+  ComparisonListItem,
+  ReviewRequest,
+} from '../types/sentinel';
+import {
+  ArtifactMonitor,
+  RelayCheck,
+  RelayStats,
+  VerifiedReleaseItem,
+  CreateMonitorInput,
+  UpdateMonitorInput,
+} from '../types/relay';
+import {
   MOCK_BUILDERS,
   MOCK_RELEASES,
   MOCK_SYSTEM_STATS,
@@ -33,7 +48,10 @@ import {
   generateAuditReport,
 } from '../mock/auditData';
 
-const API_BASE = import.meta.env.VITE_API_URL || '/api/v1';
+const RAW_API_URL = (import.meta.env.VITE_API_URL || '').replace(/\/+$/, '');
+export const API_BASE = RAW_API_URL
+  ? (RAW_API_URL.endsWith('/api/v1') ? RAW_API_URL : `${RAW_API_URL}/api/v1`)
+  : '/api/v1';
 // If VITE_DISABLE_MOCK=true or VITE_STRICT_BACKEND=true, fallback to mock data is strictly disabled
 const ENV_STRICT =
   import.meta.env.VITE_DISABLE_MOCK === 'true' ||
@@ -623,6 +641,134 @@ class QuorumApiService {
       verifiedAt: data.verified_at,
       auditChainHash: data.audit_chain_head,
     };
+  }
+
+  public async getSentinelFixtures(): Promise<FixtureItem[]> {
+    const res = await fetch(`${API_BASE}/sentinel/fixtures`);
+    if (!res.ok) throw new BackendError(`Status ${res.status}: Failed to fetch Sentinel fixtures`, res.status, '/sentinel/fixtures');
+    return await res.json();
+  }
+
+  public async compareSource(req: CompareRequest): Promise<ComparisonResponse> {
+    const res = await fetch(`${API_BASE}/sentinel/compare`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(req),
+    });
+    if (!res.ok) {
+      const errBody = await res.json().catch(() => ({}));
+      const msg = errBody.detail || `Status ${res.status}: Comparison failed`;
+      throw new BackendError(msg, res.status, '/sentinel/compare');
+    }
+    return await res.json();
+  }
+
+  public async getSentinelComparisons(limit = 50): Promise<ComparisonListItem[]> {
+    const res = await fetch(`${API_BASE}/sentinel/comparisons?limit=${limit}`);
+    if (!res.ok) throw new BackendError(`Status ${res.status}: Failed to fetch comparisons`, res.status, '/sentinel/comparisons');
+    return await res.json();
+  }
+
+  public async getSentinelComparison(id: string): Promise<ComparisonResponse> {
+    const res = await fetch(`${API_BASE}/sentinel/comparisons/${encodeURIComponent(id)}`);
+    if (!res.ok) throw new BackendError(`Status ${res.status}: Failed to load comparison ${id}`, res.status, `/sentinel/comparisons/${id}`);
+    return await res.json();
+  }
+
+  public async updateSentinelReview(id: string, req: ReviewRequest): Promise<ComparisonResponse> {
+    const res = await fetch(`${API_BASE}/sentinel/comparisons/${encodeURIComponent(id)}/review`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(req),
+    });
+    if (!res.ok) {
+      const errBody = await res.json().catch(() => ({}));
+      const msg = errBody.detail || `Status ${res.status}: Review update failed`;
+      throw new BackendError(msg, res.status, `/sentinel/comparisons/${id}/review`);
+    }
+    return await res.json();
+  }
+
+  public async getRelayStats(): Promise<RelayStats> {
+    const res = await fetch(`${API_BASE}/relay/stats`);
+    if (!res.ok) throw new BackendError(`Status ${res.status}: Failed to fetch Relay stats`, res.status, '/relay/stats');
+    return await res.json();
+  }
+
+  public async getEligibleVerifiedReleases(): Promise<VerifiedReleaseItem[]> {
+    const res = await fetch(`${API_BASE}/relay/verified-releases`);
+    if (!res.ok) throw new BackendError(`Status ${res.status}: Failed to fetch verified releases`, res.status, '/relay/verified-releases');
+    return await res.json();
+  }
+
+  public async getRelayMonitors(): Promise<ArtifactMonitor[]> {
+    const res = await fetch(`${API_BASE}/relay/monitors`);
+    if (!res.ok) throw new BackendError(`Status ${res.status}: Failed to fetch Relay monitors`, res.status, '/relay/monitors');
+    return await res.json();
+  }
+
+  public async getRelayMonitor(id: string): Promise<ArtifactMonitor> {
+    const res = await fetch(`${API_BASE}/relay/monitors/${encodeURIComponent(id)}`);
+    if (!res.ok) throw new BackendError(`Status ${res.status}: Failed to fetch monitor ${id}`, res.status, `/relay/monitors/${id}`);
+    return await res.json();
+  }
+
+  public async createRelayMonitor(req: CreateMonitorInput): Promise<ArtifactMonitor> {
+    const res = await fetch(`${API_BASE}/relay/monitors`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(req),
+    });
+    if (!res.ok) {
+      const errBody = await res.json().catch(() => ({}));
+      const msg = errBody.detail || `Status ${res.status}: Failed to register artifact monitor`;
+      throw new BackendError(msg, res.status, '/relay/monitors');
+    }
+    return await res.json();
+  }
+
+  public async updateRelayMonitor(id: string, req: UpdateMonitorInput): Promise<ArtifactMonitor> {
+    const res = await fetch(`${API_BASE}/relay/monitors/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(req),
+    });
+    if (!res.ok) {
+      const errBody = await res.json().catch(() => ({}));
+      const msg = errBody.detail || `Status ${res.status}: Failed to update monitor`;
+      throw new BackendError(msg, res.status, `/relay/monitors/${id}`);
+    }
+    return await res.json();
+  }
+
+  public async deleteRelayMonitor(id: string): Promise<{ deleted: boolean; id: string }> {
+    const res = await fetch(`${API_BASE}/relay/monitors/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    });
+    if (!res.ok) {
+      const errBody = await res.json().catch(() => ({}));
+      const msg = errBody.detail || `Status ${res.status}: Failed to delete monitor`;
+      throw new BackendError(msg, res.status, `/relay/monitors/${id}`);
+    }
+    return await res.json();
+  }
+
+  public async triggerRelayCheck(id: string): Promise<RelayCheck> {
+    const res = await fetch(`${API_BASE}/relay/monitors/${encodeURIComponent(id)}/check`, {
+      method: 'POST',
+    });
+    if (!res.ok) {
+      const errBody = await res.json().catch(() => ({}));
+      const msg = errBody.detail || `Status ${res.status}: Artifact check failed`;
+      throw new BackendError(msg, res.status, `/relay/monitors/${id}/check`);
+    }
+    return await res.json();
+  }
+
+  public async getRelayMonitorHistory(id: string, limit = 50): Promise<RelayCheck[]> {
+    const res = await fetch(`${API_BASE}/relay/monitors/${encodeURIComponent(id)}/history?limit=${limit}`);
+    if (!res.ok) throw new BackendError(`Status ${res.status}: Failed to fetch monitor check history`, res.status, `/relay/monitors/${id}/history`);
+    return await res.json();
   }
 }
 

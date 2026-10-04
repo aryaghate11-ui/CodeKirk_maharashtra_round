@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Card, CardHeader, CardBody } from '../components/common/Card';
+import { API_BASE } from '../services/api';
 
 const scenarios = ['valid', 'modified-candidate', 'conflicting-output', 'invalid-signature', 'unknown-builder', 'wrong-commit', 'replay', 'modified-report'] as const;
 type Result = {
@@ -23,7 +24,7 @@ export const AttackLabPage: React.FC = () => {
   const run = async () => {
     setBusy(true); setError(''); setResult(null);
     try {
-      const response = await fetch(`${import.meta.env.VITE_API_URL || '/api/v1'}/attack-lab/run`, {
+      const response = await fetch(`${API_BASE}/attack-lab/run`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ scenario, policy: { mode, threshold, expected_builders: 3, minimum_operators: operators, reject_on_conflict: strict } }),
       });
@@ -57,7 +58,7 @@ export const AttackLabPage: React.FC = () => {
       {result.observed_rejections.map((r, i) => <p key={i} className="mt-3 text-amber-400">HTTP {r.status_code}: {r.reason} ({r.builder_id})</p>)}
       {result.report_check && <p className="mt-3">Modified report accepted: {String(result.report_check.valid)}. {result.report_check.errors.join('; ')}</p>}
       <p className="text-xs break-all mt-4">Release: {result.verification.release_id}<br />Audit head: {result.verification.audit_chain_head}</p>
-      <a className="inline-block mt-4 underline" href={`${import.meta.env.VITE_API_URL || '/api/v1'}/releases/${result.verification.release_id}/audit-report`}>Download signed Evidence Passport</a>
+      <a className="inline-block mt-4 underline" href={`${API_BASE}/releases/${result.verification.release_id}/audit-report`}>Download signed Evidence Passport</a>
     </CardBody></Card>}
   </div>;
 };

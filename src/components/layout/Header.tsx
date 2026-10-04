@@ -42,6 +42,14 @@ export const Header: React.FC<HeaderProps> = ({
       title: 'Audit History',
       subtitle: 'Review the sequence of verification events recorded by the application.',
     },
+    sentinel: {
+      title: 'Source Sentinel',
+      subtitle: 'Detect suspicious modifications, backdoors, and dependency changes in source code before release verification.',
+    },
+    relay: {
+      title: 'Quorum Relay',
+      subtitle: 'Post-verification independent witness monitoring to detect artifact tampering or mirror substitution.',
+    },
   };
 
   const currentMeta = pageTitles[currentPage];
