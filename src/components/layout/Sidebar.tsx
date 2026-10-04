@@ -110,16 +110,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
             {toolsOpen && <div className="space-y-1 mt-1">{renderItems(toolItems)}</div>}
           </section>
         </nav>
-
-        <div className="px-4 py-4 border-t border-brand-border/60">
-          <div className="flex items-center justify-between rounded-lg bg-brand-bg-deep/55 border border-brand-border/60 px-3 py-2.5 text-xs">
-            <span className="text-brand-muted">Backend</span>
-            <span className={`inline-flex items-center gap-1.5 font-medium ${stats?.isBackendConnected ? 'text-quorum-green-light' : 'text-quorum-red-light'}`}>
-              <span className={`w-1.5 h-1.5 rounded-full ${stats?.isBackendConnected ? 'bg-quorum-green' : 'bg-quorum-red'}`} />
-              {stats?.isBackendConnected ? 'Connected' : 'Offline'}
-            </span>
-          </div>
-        </div>
       </aside>
     </>
   );
